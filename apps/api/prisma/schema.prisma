@@ -1,0 +1,696 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  ACCOUNTANT
+  WAREHOUSE
+  SALES
+}
+
+enum FieldType {
+  TEXT
+  NUMBER
+  DATE
+  SELECT
+}
+
+enum InvoiceStatus {
+  DRAFT
+  CONFIRMED
+  PARTIAL
+  PAID
+  CANCELLED
+}
+
+enum CashDirection {
+  IN
+  OUT
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CHECK
+  CARD
+  INSTAPAY
+  OTHER
+}
+
+enum PriceList {
+  RETAIL
+  WHOLESALE
+}
+
+enum ShiftStatus {
+  OPEN
+  CLOSED
+}
+
+enum CheckDirection {
+  IN
+  OUT
+}
+
+enum CheckStatus {
+  PENDING
+  CLEARED
+  BOUNCED
+  CANCELLED
+}
+
+enum DocKind {
+  QUOTATION
+  SALES_ORDER
+  PURCHASE_ORDER
+}
+
+enum DocStatus {
+  DRAFT
+  OPEN
+  CONVERTED
+  CANCELLED
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+enum StockMovementType {
+  PURCHASE
+  SALE
+  PURCHASE_RETURN
+  SALE_RETURN
+  TRANSFER_IN
+  TRANSFER_OUT
+  ADJUSTMENT
+}
+
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  fullName     String
+  role         Role     @default(SALES)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  cashTransactions CashTransaction[]
+  salesInvoices    SalesInvoice[]    @relation("SalesCreatedBy")
+  purchaseInvoices PurchaseInvoice[] @relation("PurchaseCreatedBy")
+  shifts           CashierShift[]
+  warehouseLinks   UserWarehouse[]
+}
+
+model Warehouse {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  location    String?
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  stockBalances    StockBalance[]
+  stockMovements   StockMovement[]
+  salesInvoices    SalesInvoice[]
+  purchaseInvoices PurchaseInvoice[]
+  salesReturns     SalesReturn[]
+  purchaseReturns  PurchaseReturn[]
+  transfersFrom    StockTransfer[] @relation("TransferFrom")
+  transfersTo      StockTransfer[] @relation("TransferTo")
+  locations        WarehouseLocation[]
+  productLocations ProductLocation[]
+  userLinks        UserWarehouse[]
+  documents        TradeDocument[]
+}
+
+/// حقول اختيارية عامة على الأصناف (ماركة، لون…) — الصنف اللي مش محتاجها يسيبها فاضية
+model ProductCustomField {
+  id         String    @id @default(cuid())
+  name       String    @unique
+  label      String
+  fieldType  FieldType @default(TEXT)
+  options    String?
+  isRequired Boolean   @default(false)
+  sortOrder  Int       @default(0)
+  createdAt  DateTime  @default(now())
+
+  values ProductFieldValue[]
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  sku         String   @unique
+  name        String
+  unit        String   @default("قطعة")
+  costPrice   Float    @default(0)
+  salePrice   Float    @default(0)
+  minStock       Float    @default(0)
+  description    String?
+  barcode        String?  @unique
+  brand          String?
+  categoryId     String?
+  wholesalePrice Float    @default(0)
+  packUnit       String?
+  packSize       Float    @default(1)
+  isActive       Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category            Category?          @relation(fields: [categoryId], references: [id])
+  fieldValues         ProductFieldValue[]
+  customerPrices      CustomerPrice[]
+  locations           ProductLocation[]
+  documentLines       TradeDocumentLine[]
+  stockBalances       StockBalance[]
+  stockMovements      StockMovement[]
+  salesLines          SalesInvoiceLine[]
+  purchaseLines       PurchaseInvoiceLine[]
+  salesReturnLines    SalesReturnLine[]
+  purchaseReturnLines PurchaseReturnLine[]
+  transferLines       StockTransferLine[]
+}
+
+model ProductFieldValue {
+  id        String @id @default(cuid())
+  productId String
+  fieldId   String
+  value     String
+
+  product Product            @relation(fields: [productId], references: [id], onDelete: Cascade)
+  field   ProductCustomField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, fieldId])
+}
+
+model StockBalance {
+  id          String @id @default(cuid())
+  warehouseId String
+  productId   String
+  quantity    Float  @default(0)
+
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([warehouseId, productId])
+}
+
+model StockMovement {
+  id          String            @id @default(cuid())
+  warehouseId String
+  productId   String
+  type        StockMovementType
+  quantity    Float
+  unitCost    Float             @default(0)
+  reference   String?
+  note        String?
+  createdAt   DateTime          @default(now())
+
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
+  product   Product   @relation(fields: [productId], references: [id])
+}
+
+model StockTransfer {
+  id             String   @id @default(cuid())
+  number         String   @unique
+  fromWarehouseId String
+  toWarehouseId   String
+  note           String?
+  createdAt      DateTime @default(now())
+
+  fromWarehouse Warehouse           @relation("TransferFrom", fields: [fromWarehouseId], references: [id])
+  toWarehouse   Warehouse           @relation("TransferTo", fields: [toWarehouseId], references: [id])
+  lines         StockTransferLine[]
+}
+
+model StockTransferLine {
+  id         String @id @default(cuid())
+  transferId String
+  productId  String
+  quantity   Float
+
+  transfer StockTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  product  Product       @relation(fields: [productId], references: [id])
+}
+
+model Supplier {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  phone     String?
+  email     String?
+  address   String?
+  balance   Float    @default(0)
+  notes     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purchaseInvoices PurchaseInvoice[]
+  purchaseReturns  PurchaseReturn[]
+  payments         Payment[]
+  checks           BankCheck[]
+  documents        TradeDocument[] @relation("DocSupplier")
+}
+
+model Customer {
+  id             String   @id @default(cuid())
+  code           String   @unique
+  name           String
+  phone          String?
+  email          String?
+  address        String?
+  balance        Float     @default(0)
+  creditLimit    Float     @default(0)
+  priceList      PriceList @default(RETAIL)
+  notes          String?
+  checks         BankCheck[]
+  customerPrices CustomerPrice[]
+  documents      TradeDocument[] @relation("DocCustomer")
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  salesInvoices SalesInvoice[]
+  salesReturns  SalesReturn[]
+  receipts      Receipt[]
+}
+
+model CashAccount {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  accountType String @default("CASH")
+  balance   Float    @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions CashTransaction[]
+  payments     Payment[]
+  receipts     Receipt[]
+  shifts       CashierShift[]
+  expenses     Expense[]
+  checks       BankCheck[]
+}
+
+model CashTransaction {
+  id            String        @id @default(cuid())
+  accountId     String
+  direction     CashDirection
+  amount        Float
+  description   String
+  paymentMethod PaymentMethod @default(CASH)
+  reference     String?
+  createdById   String?
+  createdAt     DateTime      @default(now())
+
+  account   CashAccount @relation(fields: [accountId], references: [id])
+  createdBy User?       @relation(fields: [createdById], references: [id])
+}
+
+model SalesInvoice {
+  id            String        @id @default(cuid())
+  number        String        @unique
+  customerId    String
+  warehouseId   String
+  status        InvoiceStatus @default(DRAFT)
+  invoiceDate   DateTime      @default(now())
+  subtotal      Float         @default(0)
+  discount      Float         @default(0)
+  tax           Float         @default(0)
+  total         Float         @default(0)
+  paidAmount    Float         @default(0)
+  paymentMethod PaymentMethod @default(CASH)
+  taxRate       Float         @default(0)
+  shiftId       String?
+  notes         String?
+  createdById   String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  customer  Customer           @relation(fields: [customerId], references: [id])
+  shift     CashierShift?      @relation(fields: [shiftId], references: [id])
+  warehouse Warehouse          @relation(fields: [warehouseId], references: [id])
+  createdBy User?              @relation("SalesCreatedBy", fields: [createdById], references: [id])
+  lines     SalesInvoiceLine[]
+  receipts  Receipt[]
+  returns   SalesReturn[]
+}
+
+model SalesInvoiceLine {
+  id        String @id @default(cuid())
+  invoiceId String
+  productId String
+  quantity  Float
+  unitPrice Float
+  unitCost  Float  @default(0)
+  discount  Float  @default(0)
+  total     Float
+
+  invoice SalesInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  product Product      @relation(fields: [productId], references: [id])
+}
+
+model PurchaseInvoice {
+  id            String        @id @default(cuid())
+  number        String        @unique
+  supplierId    String
+  warehouseId   String
+  status        InvoiceStatus @default(DRAFT)
+  invoiceDate   DateTime      @default(now())
+  subtotal      Float         @default(0)
+  discount      Float         @default(0)
+  tax           Float         @default(0)
+  total         Float         @default(0)
+  paidAmount    Float         @default(0)
+  paymentMethod PaymentMethod @default(CASH)
+  notes         String?
+  createdById   String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  supplier  Supplier              @relation(fields: [supplierId], references: [id])
+  warehouse Warehouse             @relation(fields: [warehouseId], references: [id])
+  createdBy User?                 @relation("PurchaseCreatedBy", fields: [createdById], references: [id])
+  lines     PurchaseInvoiceLine[]
+  payments  Payment[]
+  returns   PurchaseReturn[]
+}
+
+model PurchaseInvoiceLine {
+  id          String    @id @default(cuid())
+  invoiceId   String
+  productId   String
+  quantity    Float
+  unitCost    Float
+  discount    Float     @default(0)
+  total       Float
+  /// بيانات الشحنة — تختلف مع كل شراء (اختياري)
+  batchNumber String?
+  expiryDate  DateTime?
+
+  invoice PurchaseInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id])
+}
+
+model SalesReturn {
+  id              String   @id @default(cuid())
+  number          String   @unique
+  salesInvoiceId  String?
+  customerId      String
+  warehouseId     String
+  returnDate      DateTime @default(now())
+  total           Float    @default(0)
+  notes           String?
+  createdAt       DateTime @default(now())
+
+  salesInvoice SalesInvoice?     @relation(fields: [salesInvoiceId], references: [id])
+  customer     Customer          @relation(fields: [customerId], references: [id])
+  warehouse    Warehouse         @relation(fields: [warehouseId], references: [id])
+  lines        SalesReturnLine[]
+}
+
+model SalesReturnLine {
+  id        String @id @default(cuid())
+  returnId  String
+  productId String
+  quantity  Float
+  unitPrice Float
+  total     Float
+
+  salesReturn SalesReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  product     Product     @relation(fields: [productId], references: [id])
+}
+
+model PurchaseReturn {
+  id                 String   @id @default(cuid())
+  number             String   @unique
+  purchaseInvoiceId  String?
+  supplierId         String
+  warehouseId        String
+  returnDate         DateTime @default(now())
+  total              Float    @default(0)
+  notes              String?
+  createdAt          DateTime @default(now())
+
+  purchaseInvoice PurchaseInvoice?     @relation(fields: [purchaseInvoiceId], references: [id])
+  supplier        Supplier             @relation(fields: [supplierId], references: [id])
+  warehouse       Warehouse            @relation(fields: [warehouseId], references: [id])
+  lines           PurchaseReturnLine[]
+}
+
+model PurchaseReturnLine {
+  id        String @id @default(cuid())
+  returnId  String
+  productId String
+  quantity  Float
+  unitCost  Float
+  total     Float
+
+  purchaseReturn PurchaseReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  product        Product        @relation(fields: [productId], references: [id])
+}
+
+model Payment {
+  id                 String        @id @default(cuid())
+  number             String        @unique
+  supplierId         String
+  cashAccountId      String
+  purchaseInvoiceId  String?
+  amount             Float
+  paymentMethod      PaymentMethod @default(CASH)
+  referenceNo        String?
+  note               String?
+  paidAt             DateTime      @default(now())
+  createdAt          DateTime      @default(now())
+
+  supplier        Supplier         @relation(fields: [supplierId], references: [id])
+  cashAccount     CashAccount      @relation(fields: [cashAccountId], references: [id])
+  purchaseInvoice PurchaseInvoice? @relation(fields: [purchaseInvoiceId], references: [id])
+}
+
+model Receipt {
+  id              String        @id @default(cuid())
+  number          String        @unique
+  customerId      String
+  cashAccountId   String
+  salesInvoiceId  String?
+  amount          Float
+  paymentMethod   PaymentMethod @default(CASH)
+  referenceNo     String?
+  note            String?
+  shiftId         String?
+  receivedAt      DateTime      @default(now())
+  createdAt       DateTime      @default(now())
+
+  customer     Customer      @relation(fields: [customerId], references: [id])
+  cashAccount  CashAccount   @relation(fields: [cashAccountId], references: [id])
+  salesInvoice SalesInvoice? @relation(fields: [salesInvoiceId], references: [id])
+  shift        CashierShift? @relation(fields: [shiftId], references: [id])
+}
+
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
+}
+
+model Sequence {
+  id    String @id @default(cuid())
+  key   String @unique
+  value Int    @default(0)
+}
+
+model Category {
+  id       String    @id @default(cuid())
+  name     String    @unique
+  products Product[]
+}
+
+model CustomerPrice {
+  id         String @id @default(cuid())
+  customerId String
+  productId  String
+  price      Float
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, productId])
+}
+
+model WarehouseLocation {
+  id          String @id @default(cuid())
+  warehouseId String
+  code        String
+  name        String
+
+  warehouse Warehouse         @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  products  ProductLocation[]
+
+  @@unique([warehouseId, code])
+}
+
+model ProductLocation {
+  id          String @id @default(cuid())
+  productId   String
+  warehouseId String
+  locationId  String
+
+  product   Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse Warehouse         @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  location  WarehouseLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, warehouseId])
+}
+
+model UserWarehouse {
+  userId      String
+  warehouseId String
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@id([userId, warehouseId])
+}
+
+model CashierShift {
+  id            String      @id @default(cuid())
+  userId        String
+  cashAccountId String
+  status        ShiftStatus @default(OPEN)
+  openingCash   Float
+  closingCash   Float?
+  expectedCash  Float?
+  difference    Float?
+  notes         String?
+  openedAt      DateTime    @default(now())
+  closedAt      DateTime?
+
+  user      User            @relation(fields: [userId], references: [id])
+  account   CashAccount     @relation(fields: [cashAccountId], references: [id])
+  invoices  SalesInvoice[]
+  receipts  Receipt[]
+  expenses  Expense[]
+}
+
+model ExpenseCategory {
+  id       String    @id @default(cuid())
+  name     String    @unique
+  expenses Expense[]
+}
+
+model Expense {
+  id            String        @id @default(cuid())
+  categoryId    String
+  accountId     String
+  shiftId       String?
+  amount        Float
+  expenseDate   DateTime      @default(now())
+  paymentMethod PaymentMethod @default(CASH)
+  notes         String?
+  createdAt     DateTime      @default(now())
+
+  category ExpenseCategory @relation(fields: [categoryId], references: [id])
+  account  CashAccount     @relation(fields: [accountId], references: [id])
+  shift    CashierShift?   @relation(fields: [shiftId], references: [id])
+}
+
+model BankCheck {
+  id          String         @id @default(cuid())
+  direction   CheckDirection
+  checkNumber String
+  bankName    String
+  amount      Float
+  issueDate   DateTime       @default(now())
+  dueDate     DateTime
+  status      CheckStatus    @default(PENDING)
+  customerId  String?
+  supplierId  String?
+  accountId   String?
+  notes       String?
+  createdAt   DateTime       @default(now())
+
+  customer Customer?    @relation(fields: [customerId], references: [id])
+  supplier Supplier?    @relation(fields: [supplierId], references: [id])
+  account  CashAccount? @relation(fields: [accountId], references: [id])
+}
+
+model TradeDocument {
+  id          String    @id @default(cuid())
+  kind        DocKind
+  number      String    @unique
+  status      DocStatus @default(DRAFT)
+  customerId  String?
+  supplierId  String?
+  warehouseId String?
+  docDate     DateTime  @default(now())
+  notes       String?
+  discount    Float     @default(0)
+  taxRate     Float     @default(0)
+  total       Float     @default(0)
+  convertedId String?
+  createdAt   DateTime  @default(now())
+
+  customer  Customer?           @relation("DocCustomer", fields: [customerId], references: [id])
+  supplier  Supplier?           @relation("DocSupplier", fields: [supplierId], references: [id])
+  warehouse Warehouse?          @relation(fields: [warehouseId], references: [id])
+  lines     TradeDocumentLine[]
+}
+
+model TradeDocumentLine {
+  id         String @id @default(cuid())
+  documentId String
+  productId  String
+  quantity   Float
+  unitPrice  Float
+  discount   Float  @default(0)
+  total      Float
+
+  document TradeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  product  Product       @relation(fields: [productId], references: [id])
+}
+
+model LedgerAccount {
+  id       String      @id @default(cuid())
+  code     String      @unique
+  name     String
+  type     AccountType
+  isActive Boolean     @default(true)
+  lines    JournalLine[]
+}
+
+model JournalEntry {
+  id          String   @id @default(cuid())
+  number      String   @unique
+  entryDate   DateTime @default(now())
+  description String
+  createdAt   DateTime @default(now())
+  lines       JournalLine[]
+}
+
+model JournalLine {
+  id        String @id @default(cuid())
+  entryId   String
+  accountId String
+  debit     Float  @default(0)
+  credit    Float  @default(0)
+  note      String?
+
+  entry   JournalEntry  @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  account LedgerAccount @relation(fields: [accountId], references: [id])
+}

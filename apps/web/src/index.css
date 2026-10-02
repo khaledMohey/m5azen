@@ -1,0 +1,154 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Cairo", ui-sans-serif, system-ui, sans-serif;
+  --color-brand-50: #f2f5f9;
+  --color-brand-100: #e4eaf2;
+  --color-brand-200: #c5d1e0;
+  --color-brand-300: #9aafc8;
+  --color-brand-400: #6b87a8;
+  --color-brand-500: #4a6a8f;
+  --color-brand-600: #2b4e7d;
+  --color-brand-700: #1a3050;
+  --color-brand-800: #14263f;
+  --color-brand-900: #0f1c2e;
+  --color-brand-950: #0a1320;
+  --color-navy: #1a3050;
+  --color-navy-deep: #0f1c2e;
+  --color-navy-mid: #2b4e7d;
+  --color-surface: #f3f5f8;
+  --color-ink: #0f1c2e;
+  --color-muted: #64748b;
+}
+
+:root {
+  --status-paid: #dcfce7;
+  --status-paid-text: #166534;
+  --status-partial: #fef3c7;
+  --status-partial-text: #92400e;
+  --status-confirmed: #e4eaf2;
+  --status-confirmed-text: #1a3050;
+  --status-draft: #f1f5f9;
+  --status-draft-text: #475569;
+  --status-cancelled: #fee2e2;
+  --status-cancelled-text: #991b1b;
+  --debit-bg: #ecfdf5;
+  --credit-bg: #fef2f2;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  .print-only,
+  .print-header {
+    display: flex !important;
+  }
+  body {
+    background: white !important;
+    color: #0f1c2e;
+  }
+  aside,
+  nav {
+    display: none !important;
+  }
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: none !important;
+  }
+  /* لما فيه نافذة مفتوحة (كشف حساب / فاتورة) اطبع محتواها فقط */
+  body:has(.print-sheet) * {
+    visibility: hidden;
+  }
+  body:has(.print-sheet) .print-sheet,
+  body:has(.print-sheet) .print-sheet * {
+    visibility: visible;
+  }
+  body:has(.print-sheet) .print-sheet .no-print,
+  body:has(.print-sheet) .print-sheet .no-print * {
+    display: none !important;
+    visibility: hidden !important;
+  }
+  .print-sheet {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    background: white !important;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  th {
+    background: #1a3050 !important;
+    color: white !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .row-debit,
+  .row-credit,
+  .status-PAID,
+  .status-PARTIAL,
+  .status-CONFIRMED,
+  .status-DRAFT,
+  tr {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
+
+.print-only,
+.print-header {
+  display: none;
+}
+
+.status-PAID { background: var(--status-paid); color: var(--status-paid-text); }
+.status-PARTIAL { background: var(--status-partial); color: var(--status-partial-text); }
+.status-CONFIRMED { background: var(--status-confirmed); color: var(--status-confirmed-text); }
+.status-DRAFT { background: var(--status-draft); color: var(--status-draft-text); }
+.status-CANCELLED { background: var(--status-cancelled); color: var(--status-cancelled-text); }
+
+.row-debit { background: var(--debit-bg); }
+.row-credit { background: var(--credit-bg); }
+
+.mov-PURCHASE { background: #ecfdf5; }
+.mov-SALE { background: #fef2f2; }
+.mov-PURCHASE_RETURN { background: #fff7ed; }
+.mov-SALE_RETURN { background: #eff6ff; }
+.mov-TRANSFER_IN { background: #f0fdf4; }
+.mov-TRANSFER_OUT { background: #fefce8; }
+.mov-ADJUSTMENT { background: #f8fafc; }
+
+/* إخفاء أسهم الزيادة/النقصان في خانات الأرقام */
+input.no-spinner::-webkit-outer-spin-button,
+input.no-spinner::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input.no-spinner[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}

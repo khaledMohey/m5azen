@@ -1,0 +1,24 @@
+{
+  "name": "m5azen",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w @m5azen/api",
+    "dev:web": "npm run dev -w @m5azen/web",
+    "dev:desktop": "npm run tauri -w @m5azen/desktop -- dev",
+    "build:web": "npm run build -w @m5azen/web",
+    "build:api": "npm run build -w @m5azen/api",
+    "build:desktop": "npm run build -w @m5azen/web && npm run tauri -w @m5azen/desktop -- build",
+    "db:generate": "npm run prisma:generate -w @m5azen/api",
+    "db:push": "npm run prisma:push -w @m5azen/api",
+    "db:seed": "npm run prisma:seed -w @m5azen/api",
+    "setup": "npm install && npm run db:generate"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
