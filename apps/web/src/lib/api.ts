@@ -1,14 +1,26 @@
 const STORAGE_KEY = 'm5azen_api_url';
 
+const LOCAL_HOST = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
+
 export function getApiBase(): string {
   const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored) return stored.replace(/\/$/, '');
+  // A localhost API saved on this browser is unreachable when the app is opened through a public link.
+  const pageIsLocal = /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
+  if (stored && (pageIsLocal || !LOCAL_HOST.test(stored))) return stored.replace(/\/$/, '');
   if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL.replace(/\/$/, '');
   return '';
 }
 
 export function setApiBase(url: string) {
-  localStorage.setItem(STORAGE_KEY, url.replace(/\/$/, ''));
+  const clean = url.trim().replace(/\/$/, '');
+  if (clean) localStorage.setItem(STORAGE_KEY, clean);
+  else localStorage.removeItem(STORAGE_KEY);
+}
+
+export function productImageUrl(id: string, version?: string | null) {
+  const token = localStorage.getItem('m5azen_token') || '';
+  const stamp = version ? `&v=${encodeURIComponent(version)}` : '';
+  return `${getApiBase()}/api/products/${id}/image?token=${encodeURIComponent(token)}${stamp}`;
 }
 
 export async function api<T>(
@@ -63,6 +75,23 @@ export function formatDate(d: string | Date) {
     month: 'short',
     day: 'numeric',
   }).format(new Date(d));
+}
+
+export function formatRelative(d: string | Date) {
+  const date = new Date(d);
+  const minutes = Math.round((Date.now() - date.getTime()) / 60000);
+  if (Number.isNaN(minutes)) return '';
+  if (minutes < 1) return 'الآن';
+  if (minutes < 60) return `منذ ${minutes} د`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `منذ ${hours} س`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `منذ ${days} ي`;
+  return formatDate(date);
+}
+
+export function initialQuery() {
+  return new URLSearchParams(window.location.search).get('q') || '';
 }
 
 export const STATUS_LABELS: Record<string, string> = {

@@ -9,15 +9,31 @@ import { PrismaService } from '../prisma/prisma.service';
 export class WarehousesService {
   constructor(private prisma: PrismaService) {}
 
+  private async withStock<T extends { id: string }>(rows: T[]) {
+    if (!rows.length) return rows.map((row) => ({ ...row, itemCount: 0, quantity: 0 }));
+    const totals = await this.prisma.stockBalance.groupBy({
+      by: ['warehouseId'],
+      where: { warehouseId: { in: rows.map((row) => row.id) }, quantity: { gt: 0 } },
+      _sum: { quantity: true },
+      _count: { _all: true },
+    });
+    const byId = new Map(totals.map((row) => [row.warehouseId, row]));
+    return rows.map((row) => ({
+      ...row,
+      itemCount: byId.get(row.id)?._count._all ?? 0,
+      quantity: byId.get(row.id)?._sum.quantity ?? 0,
+    }));
+  }
+
   async findAll(user?: { userId: string; role: string }) {
     const all = () => this.prisma.warehouse.findMany({ orderBy: { name: 'asc' } });
-    if (!user || user.role === 'ADMIN') return all();
+    if (!user || user.role === 'ADMIN') return this.withStock(await all());
     const links = await this.prisma.userWarehouse.findMany({ where: { userId: user.userId } });
-    if (!links.length) return all();
-    return this.prisma.warehouse.findMany({
+    if (!links.length) return this.withStock(await all());
+    return this.withStock(await this.prisma.warehouse.findMany({
       where: { id: { in: links.map((l) => l.warehouseId) } },
       orderBy: { name: 'asc' },
-    });
+    }));
   }
 
   async findOne(id: string) {
@@ -26,15 +42,41 @@ export class WarehousesService {
     return wh;
   }
 
-  create(data: { code: string; name: string; location?: string; description?: string }) {
-    return this.prisma.warehouse.create({ data });
+  async create(data: { code: string; name: string; location?: string; description?: string }) {
+    const code = data.code.trim();
+    const name = data.name.trim();
+    if (!code) throw new BadRequestException('كود المخزن مطلوب');
+    if (name.length < 2) throw new BadRequestException('اسم المخزن قصير');
+    const taken = await this.prisma.warehouse.findUnique({ where: { code } });
+    if (taken) throw new BadRequestException('كود المخزن مستخدم');
+    return this.prisma.warehouse.create({
+      data: { code, name, location: data.location?.trim() || null, description: data.description?.trim() || null },
+    });
   }
 
-  update(
+  async update(
     id: string,
     data: Partial<{ code: string; name: string; location: string; description: string; isActive: boolean }>,
   ) {
-    return this.prisma.warehouse.update({ where: { id }, data });
+    const current = await this.findOne(id);
+    const code = data.code?.trim();
+    const name = data.name?.trim();
+    if (code === '') throw new BadRequestException('كود المخزن مطلوب');
+    if (name !== undefined && name.length < 2) throw new BadRequestException('اسم المخزن قصير');
+    if (code && code !== current.code) {
+      const taken = await this.prisma.warehouse.findUnique({ where: { code } });
+      if (taken) throw new BadRequestException('كود المخزن مستخدم');
+    }
+    return this.prisma.warehouse.update({
+      where: { id },
+      data: {
+        ...data,
+        ...(code !== undefined ? { code } : {}),
+        ...(name !== undefined ? { name } : {}),
+        ...(data.location !== undefined ? { location: data.location.trim() || null } : {}),
+        ...(data.description !== undefined ? { description: data.description.trim() || null } : {}),
+      },
+    });
   }
 
   async remove(id: string) {

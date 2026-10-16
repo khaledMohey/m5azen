@@ -34,21 +34,17 @@ async function main() {
     update: {},
   });
 
-  const existingFields = await prisma.warehouseCustomField.count({
-    where: { warehouseId: warehouse.id },
-  });
+  const existingFields = await prisma.productCustomField.count();
   if (existingFields === 0) {
-    await prisma.warehouseCustomField.createMany({
+    await prisma.productCustomField.createMany({
       data: [
         {
-          warehouseId: warehouse.id,
           name: 'brand',
           label: 'العلامة التجارية',
           fieldType: FieldType.TEXT,
           sortOrder: 1,
         },
         {
-          warehouseId: warehouse.id,
           name: 'color',
           label: 'اللون',
           fieldType: FieldType.SELECT,
@@ -56,7 +52,6 @@ async function main() {
           sortOrder: 2,
         },
         {
-          warehouseId: warehouse.id,
           name: 'size',
           label: 'المقاس',
           fieldType: FieldType.TEXT,

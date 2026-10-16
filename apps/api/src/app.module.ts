@@ -18,6 +18,10 @@ import { StockModule } from './stock/stock.module';
 import { FinanceModule } from './finance/finance.module';
 import { DocumentsModule } from './documents/documents.module';
 import { LedgerModule } from './ledger/ledger.module';
+import { OpsModule } from './ops/ops.module';
+import { OrgModule } from './org/org.module';
+import { WorkModule } from './work/work.module';
+import { HealthController } from './health.controller';
 
 @Module({
   imports: [
@@ -40,6 +44,10 @@ import { LedgerModule } from './ledger/ledger.module';
     FinanceModule,
     DocumentsModule,
     LedgerModule,
+    OpsModule,
+    OrgModule,
+    WorkModule,
   ],
+  controllers: [HealthController],
 })
 export class AppModule {}

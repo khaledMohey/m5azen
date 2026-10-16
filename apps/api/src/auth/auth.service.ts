@@ -20,6 +20,7 @@ export class AuthService {
       throw new UnauthorizedException('اسم المستخدم أو كلمة المرور غير صحيحة');
     }
     const payload = { sub: user.id, username: user.username, role: user.role };
+    await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
     return {
       accessToken: await this.jwt.signAsync(payload),
       user: {
@@ -34,7 +35,7 @@ export class AuthService {
   async me(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, username: true, fullName: true, role: true, isActive: true },
+      select: { id: true, username: true, fullName: true, role: true, isActive: true, lastLoginAt: true },
     });
     if (!user) throw new UnauthorizedException();
     return user;

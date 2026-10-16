@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
-import { IsBoolean, IsEnum, IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsBoolean, IsEnum, IsNumber, IsOptional, IsString } from 'class-validator';
 import { PriceList, Role } from '@prisma/client';
 import { CustomersService } from './customers.service';
 import { Roles } from '../common/guards';
@@ -13,6 +13,11 @@ class CustomerDto {
   @IsOptional() @IsNumber() creditLimit?: number;
   @IsOptional() @IsEnum(PriceList) priceList?: PriceList;
   @IsOptional() @IsString() notes?: string;
+}
+
+class BulkCustomerDto {
+  @IsArray() @IsString({ each: true }) ids!: string[];
+  @IsBoolean() isActive!: boolean;
 }
 
 class UpdateCustomerDto {
@@ -55,6 +60,12 @@ export class CustomersController {
   @Roles(Role.ADMIN, Role.ACCOUNTANT, Role.SALES)
   setPrices(@Param('id') id: string, @Body() body: { prices: { productId: string; price: number }[] }) {
     return this.service.setPrices(id, body.prices || []);
+  }
+
+  @Post('bulk')
+  @Roles(Role.ADMIN, Role.ACCOUNTANT)
+  bulk(@Body() dto: BulkCustomerDto) {
+    return this.service.bulkSetActive(dto.ids, dto.isActive);
   }
 
   @Post()

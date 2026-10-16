@@ -43,6 +43,12 @@ export class CustomersService {
     return this.prisma.customer.create({ data });
   }
 
+  bulkSetActive(ids: string[], isActive: boolean) {
+    const unique = [...new Set(ids)].slice(0, 200);
+    if (!unique.length) return Promise.resolve({ updated: 0 });
+    return this.prisma.customer.updateMany({ where: { id: { in: unique } }, data: { isActive } }).then((result) => ({ updated: result.count }));
+  }
+
   update(id: string, data: Partial<{
     code: string; name: string; phone: string; email: string; address: string;
     creditLimit: number; priceList: PriceList; notes: string; isActive: boolean;

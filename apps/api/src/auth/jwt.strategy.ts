@@ -8,7 +8,10 @@ import { Role } from '@prisma/client';
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(config: ConfigService) {
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        (req: { query?: { token?: string } }) => (typeof req?.query?.token === 'string' ? req.query.token : null),
+      ]),
       ignoreExpiration: false,
       secretOrKey: config.get('JWT_SECRET') || 'm5azen-dev-secret',
     });

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeftRight, Eye, Pencil, Printer, Trash2 } from 'lucide-react';
+import { ArrowLeftRight, Boxes, Coins, Eye, PackageCheck, PackageX, Pencil, Printer, Trash2 } from 'lucide-react';
 import { api, formatDate, formatMoney } from '../lib/api';
+import { useConfirm, useToast } from '../lib/feedback';
 import {
-  Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, PrintHeader, SearchBox, Select, Table, Td, Th,
+  Badge, Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, PrintHeader, SearchBox, Select, StatCard, StatGrid, Table, Td, Th,
 } from '../components/ui';
 
 type FieldValue = { value: string; field: { label: string } };
@@ -65,6 +66,8 @@ const MOV_LABELS: Record<string, string> = {
 };
 
 export function StockPage() {
+  const confirm = useConfirm();
+  const toast = useToast();
   const [tab, setTab] = useState<'balances' | 'movements'>('balances');
   const [data, setData] = useState<{ items: StockItem[]; grandTotal: number; totalQty: number }>({
     items: [], grandTotal: 0, totalQty: 0,
@@ -200,12 +203,14 @@ export function StockPage() {
   }
 
   async function deleteMov(id: string) {
-    if (!confirm('حذف الحركة وتعديل الرصيد؟')) return;
+    const ok = await confirm({ title: 'حذف الحركة', message: 'حذف الحركة وتعديل الرصيد؟', confirmLabel: 'حذف', danger: true });
+    if (!ok) return;
     try {
       await api(`/stock/movements/${id}`, { method: 'DELETE' });
+      toast.success('تم حذف الحركة');
       load();
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'تعذر الحذف');
+      toast.error(e instanceof Error ? e.message : 'تعذر الحذف');
     }
   }
 
@@ -233,12 +238,14 @@ export function StockPage() {
   }
 
   async function deleteBatch(id: string) {
-    if (!confirm('حذف الدفعة وخصم كميتها من المخزون؟')) return;
+    const ok = await confirm({ title: 'حذف الدفعة', message: 'حذف الدفعة وخصم كميتها من المخزون؟', confirmLabel: 'حذف', danger: true });
+    if (!ok) return;
     try {
       await api(`/stock/batches/${id}`, { method: 'DELETE' });
+      toast.success('تم حذف الدفعة');
       load();
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'تعذر الحذف');
+      toast.error(e instanceof Error ? e.message : 'تعذر الحذف');
     }
   }
 
@@ -265,48 +272,38 @@ export function StockPage() {
         }
       />
 
-      <div className="mb-4 flex flex-nowrap items-center justify-start gap-2 no-print">
-        <SearchBox
-          value={search}
-          onChange={setSearch}
-          placeholder="بحث صنف / كود / مخزن..."
-          className="!w-72 shrink-0"
-        />
-        <Select className="!w-52 shrink-0" value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)}>
-          <option value="">كل المخازن</option>
-          {warehouses.map((w) => (
-            <option key={w.id} value={w.id}>{w.name}</option>
-          ))}
-        </Select>
-      </div>
-
       <PrintHeader
         title="تقرير المخزون والتكلفة"
         subtitle={warehouseId ? warehouses.find((w) => w.id === warehouseId)?.name : 'كل المخازن'}
       />
 
-      <div className="mb-4 grid gap-3 sm:grid-cols-3 no-print">
-        <Card className="!bg-brand-50 !border-brand-200">
-          <div className="text-xs text-brand-700">عدد الأصناف</div>
-          <div className="text-2xl font-extrabold text-brand-900">{visibleItems.length}</div>
-        </Card>
-        <Card className="!bg-emerald-50 !border-emerald-200">
-          <div className="text-xs text-emerald-700">إجمالي الكميات</div>
-          <div className="text-2xl font-extrabold text-emerald-900">{visibleQty}</div>
-        </Card>
-        <Card className="!bg-amber-50 !border-amber-200">
-          <div className="text-xs text-amber-800">إجمالي تكلفة المخزون</div>
-          <div className="text-2xl font-extrabold text-amber-950">{formatMoney(visibleCost)}</div>
-        </Card>
+      <div className="no-print">
+        <StatGrid>
+          <StatCard label="أرصدة معروضة" value={visibleItems.length} hint={warehouseId ? warehouses.find((w) => w.id === warehouseId)?.name : 'كل المخازن'} icon={Boxes} tone="brand" />
+          <StatCard label="إجمالي الكميات" value={visibleQty.toLocaleString('ar-EG')} hint="وحدة في المخزون" icon={PackageCheck} tone="emerald" />
+          <StatCard label="تكلفة المخزون" value={formatMoney(visibleCost)} hint="بمتوسط تكلفة الدفعات" icon={Coins} tone="amber" />
+          <StatCard label="أرصدة نفدت" value={visibleItems.filter((b) => b.quantity <= 0).length} hint="كمية صفر أو أقل" icon={PackageX} tone="rose" />
+        </StatGrid>
       </div>
 
-      <div className="mb-4 flex gap-2 no-print">
-        <Button variant={tab === 'balances' ? 'primary' : 'secondary'} onClick={() => setTab('balances')}>
-          الأرصدة والدفعات
-        </Button>
-        <Button variant={tab === 'movements' ? 'primary' : 'secondary'} onClick={() => setTab('movements')}>
-          الحركات
-        </Button>
+      <div className="mb-4 flex flex-wrap items-center gap-2 no-print">
+        <div className="flex rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
+          {([['balances', 'الأرصدة والدفعات'], ['movements', 'الحركات']] as const).map(([key, label]) => (
+            <button key={key} type="button" onClick={() => setTab(key)} className={`h-8 rounded-lg px-4 text-[13px] font-bold transition ${tab === key ? 'bg-brand-700 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>{label}</button>
+          ))}
+        </div>
+        <SearchBox
+          value={search}
+          onChange={setSearch}
+          placeholder="بحث صنف / كود / مخزن..."
+          className="!w-72 max-w-full"
+        />
+        <Select className="!w-52" value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)}>
+          <option value="">كل المخازن</option>
+          {warehouses.map((w) => (
+            <option key={w.id} value={w.id}>{w.name}</option>
+          ))}
+        </Select>
       </div>
 
       {tab === 'balances' ? (
@@ -327,18 +324,17 @@ export function StockPage() {
               </thead>
               <tbody>
                 {visibleItems.map((b) => (
-                  <tr key={b.id} className={b.quantity <= 0 ? 'bg-rose-50/70' : 'bg-emerald-50/40'}>
-                    <Td>{b.warehouse.name}</Td>
-                    <Td className="font-mono text-xs">{b.product.sku}</Td>
-                    <Td className="font-semibold">{b.product.name}</Td>
-                    <Td className="font-bold">{b.quantity} {b.product.unit}</Td>
-                    <Td>{formatMoney(b.unitCost)}</Td>
-                    <Td className="font-bold text-brand-800">{formatMoney(b.totalCost)}</Td>
+                  <tr key={b.id} className={b.quantity <= 0 ? 'row-credit' : ''}>
+                    <Td className="text-slate-600">{b.warehouse.name}</Td>
+                    <Td><span className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-xs font-bold text-slate-700" dir="ltr">{b.product.sku}</span></Td>
+                    <Td className="font-bold text-slate-900">{b.product.name}</Td>
                     <Td>
-                      <span className="rounded-lg bg-brand-100 px-2 py-0.5 text-xs font-bold text-brand-800">
-                        {b.batches.length} دفعة
-                      </span>
+                      <span className={`font-extrabold ${b.quantity <= 0 ? 'text-rose-600' : 'text-slate-900'}`}>{b.quantity.toLocaleString('ar-EG')}</span>
+                      <span className="ms-1 text-xs text-muted">{b.product.unit}</span>
                     </Td>
+                    <Td className="whitespace-nowrap text-slate-600">{formatMoney(b.unitCost)}</Td>
+                    <Td className="whitespace-nowrap font-extrabold text-brand-800">{formatMoney(b.totalCost)}</Td>
+                    <Td><Badge tone="brand">{b.batches.length} دفعة</Badge></Td>
                     <Td className="no-print">
                       <Button variant="ghost" onClick={() => setDetail(b)}>
                         <Eye size={14} /> تفاصيل
@@ -349,9 +345,9 @@ export function StockPage() {
               </tbody>
             </Table>
           )}
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-brand-800 px-4 py-3 text-white">
-            <span className="font-semibold">إجمالي تكلفة المخزون المعروض</span>
-            <span className="text-xl font-extrabold">{formatMoney(visibleCost)}</span>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-gradient-to-l from-brand-700 to-brand-900 px-5 py-3.5 text-white shadow-sm">
+            <span className="text-sm font-semibold text-white/85">إجمالي تكلفة المخزون المعروض · {visibleQty.toLocaleString('ar-EG')} وحدة</span>
+            <span className="text-xl font-extrabold tabular-nums">{formatMoney(visibleCost)}</span>
           </div>
         </Card>
       ) : (
@@ -374,16 +370,16 @@ export function StockPage() {
               <tbody>
                 {visibleMovements.map((m) => (
                   <tr key={m.id} className={`mov-${m.type}`}>
-                    <Td className="text-xs">{formatDate(m.createdAt)}</Td>
-                    <Td className="font-semibold">{MOV_LABELS[m.type] || m.type}</Td>
-                    <Td>{m.warehouse.name}</Td>
+                    <Td className="whitespace-nowrap text-xs text-slate-500">{formatDate(m.createdAt)}</Td>
+                    <Td><Badge tone={m.quantity > 0 ? 'emerald' : m.quantity < 0 ? 'rose' : 'slate'}>{MOV_LABELS[m.type] || m.type}</Badge></Td>
+                    <Td className="text-slate-600">{m.warehouse.name}</Td>
                     <Td>
-                      <div className="font-semibold">{m.product.name}</div>
-                      <div className="font-mono text-xs text-muted">{m.product.sku}</div>
+                      <div className="font-bold text-slate-900">{m.product.name}</div>
+                      <div className="font-mono text-xs text-muted" dir="ltr">{m.product.sku}</div>
                     </Td>
-                    <Td className="font-bold">{m.quantity}</Td>
-                    <Td>{formatMoney(m.unitCost)}</Td>
-                    <Td className="font-mono text-xs">{m.reference || '—'}</Td>
+                    <Td className={`font-extrabold ${m.quantity > 0 ? 'text-emerald-700' : 'text-rose-600'}`} ><bdi dir="ltr">{m.quantity > 0 ? `+${m.quantity}` : m.quantity}</bdi></Td>
+                    <Td className="whitespace-nowrap text-slate-600">{formatMoney(m.unitCost)}</Td>
+                    <Td><span className="font-mono text-xs font-bold text-brand-700" dir="ltr">{m.reference || '—'}</span></Td>
                     <Td className="text-sm">{m.note || '—'}</Td>
                     <Td className="no-print">
                       <div className="flex gap-1">

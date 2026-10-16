@@ -1,9 +1,27 @@
-import { useEffect, useState } from 'react';
-import { Columns3, Pencil, Plus } from 'lucide-react';
-import { api, formatMoney } from '../lib/api';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Barcode, Boxes, Coins, Columns3, Package, Pencil, Plus, Tag, TrendingDown, TriangleAlert, Upload, Warehouse } from 'lucide-react';
+import ExcelJS from 'exceljs';
+import { api, formatMoney, getApiBase, initialQuery, productImageUrl } from '../lib/api';
+import { useAuth } from '../lib/auth';
+import { useConfirm, useToast } from '../lib/feedback';
+import { ListBar, IconAction } from '../components/ListBar';
+import { useColumns } from '../lib/columns';
+import { usePagedList } from '../lib/paging';
 import {
-  Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, Select, Table, Td, Th,
+  Badge, Button, Card, Empty, Field, Input, Label, Modal, NumberInput, PageHeader, Pager, Select, StatCard, StatGrid, Table, Td, Th,
 } from '../components/ui';
+
+function ProductThumb({ product, size = 'md' }: { product: { id: string; name: string; imageFile?: string | null }; size?: 'md' | 'lg' }) {
+  const box = size === 'lg' ? 'h-14 w-14 rounded-xl' : 'h-10 w-10 rounded-lg';
+  if (product.imageFile) {
+    return <img src={productImageUrl(product.id, product.imageFile)} alt="" loading="lazy" className={`${box} shrink-0 border border-slate-200 bg-white object-cover`} />;
+  }
+  return (
+    <span className={`${box} grid shrink-0 place-items-center bg-gradient-to-br from-brand-50 to-brand-100 text-brand-600`}>
+      <Package size={size === 'lg' ? 20 : 16} />
+    </span>
+  );
+}
 
 type CustomField = {
   id: string;
@@ -28,9 +46,14 @@ type Product = {
   categoryId?: string | null;
   packUnit?: string | null;
   packSize?: number;
+  imageFile?: string | null;
   fieldValues: { fieldId: string; value: string; field: CustomField }[];
   stockBalances: { quantity: number; warehouse: { name: string } }[];
+  category?: { id: string; name: string } | null;
 };
+
+const DRAFT_KEY = 'm5azen.productDraft';
+const VIEW_KEY = 'm5azen.productsView';
 
 const emptyCreate = {
   sku: '',
@@ -46,12 +69,186 @@ const emptyCreate = {
   packSize: '' as number | '',
 };
 
+type ProductForm = typeof emptyCreate;
+
+function productIssues(form: ProductForm, items: Product[], ignoreId?: string, costPrice = 0) {
+  const errors: Partial<Record<'sku' | 'name' | 'barcode' | 'salePrice', string>> = {};
+  const warnings: Partial<Record<'salePrice', string>> = {};
+  const sku = form.sku.trim();
+  const name = form.name.trim();
+  const barcode = form.barcode.trim();
+  if (!sku) errors.sku = 'كود الصنف مطلوب';
+  else if (items.some((item) => item.id !== ignoreId && item.sku.toLowerCase() === sku.toLowerCase())) errors.sku = 'هذا الكود مستخدم لصنف آخر';
+  if (name.length < 2) errors.name = 'اكتب اسمًا من حرفين على الأقل';
+  if (barcode && items.some((item) => item.id !== ignoreId && item.barcode && item.barcode === barcode)) errors.barcode = 'هذا الباركود مسجل لصنف آخر';
+  if (form.salePrice !== '' && Number(form.salePrice) < 0) errors.salePrice = 'السعر لا يكون بالسالب';
+  else if (costPrice > 0 && form.salePrice !== '' && Number(form.salePrice) < costPrice) warnings.salePrice = 'سعر البيع أقل من تكلفة آخر شراء. تقدر تحفظه لو ده مقصود.';
+  return { errors, warnings };
+}
+
+const STEPS = ['بيانات الصنف', 'السعر والمخزون', 'حقول إضافية'];
+
+function ProductFormWizard({
+  form,
+  setForm,
+  issues,
+  brands,
+  units,
+  categories,
+  fields,
+  fieldValues,
+  setFieldValues,
+  costPrice,
+  onAddCategory,
+  onSubmit,
+  submitLabel,
+}: {
+  form: ProductForm;
+  setForm: (form: ProductForm) => void;
+  issues: ReturnType<typeof productIssues>;
+  brands: string[];
+  units: string[];
+  categories: { id: string; name: string }[];
+  fields: CustomField[];
+  fieldValues: Record<string, string>;
+  setFieldValues: (values: Record<string, string>) => void;
+  costPrice?: number;
+  onAddCategory: (name: string) => Promise<string>;
+  onSubmit: () => void;
+  submitLabel: string;
+}) {
+  const [step, setStep] = useState(0);
+  const [categoryName, setCategoryName] = useState('');
+  const blocked = step === 0 && !!(issues.errors.sku || issues.errors.name || issues.errors.barcode);
+
+  return (
+    <div>
+      <div className="mb-4 grid grid-cols-3 gap-2">
+        {STEPS.map((label, index) => (
+          <button
+            key={label}
+            type="button"
+            className={`rounded-xl px-2 py-2 text-xs font-bold ${index === step ? 'bg-brand-600 text-white' : index < step ? 'bg-brand-50 text-brand-800' : 'bg-slate-100 text-slate-500'}`}
+            onClick={() => {
+              if (index > step && blocked) return;
+              setStep(index);
+            }}
+          >
+            {index + 1}. {label}
+          </button>
+        ))}
+      </div>
+      {step === 0 && (
+        <div className="space-y-3">
+          <Field label="كود الصنف" icon={<Tag size={16} />} error={issues.errors.sku}>
+            <Input value={form.sku} onChange={(event) => setForm({ ...form, sku: event.target.value })} placeholder="SKU-100" />
+          </Field>
+          <Field label="اسم الصنف" icon={<Package size={16} />} error={issues.errors.name}>
+            <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+          </Field>
+          <Field label="وحدة القياس" icon={<Boxes size={16} />} hint="اقتراحات من الأصناف الموجودة">
+            <Input list="product-units" value={form.unit} onChange={(event) => setForm({ ...form, unit: event.target.value })} />
+            <datalist id="product-units">{units.map((unit) => <option key={unit} value={unit} />)}</datalist>
+          </Field>
+          <Field label="الباركود" icon={<Barcode size={16} />} error={issues.errors.barcode}>
+            <Input value={form.barcode} onChange={(event) => setForm({ ...form, barcode: event.target.value })} />
+          </Field>
+          <Field label="الماركة" icon={<Tag size={16} />} hint="تظهر ماركات محفوظة أثناء الكتابة">
+            <Input list="product-brands" value={form.brand} onChange={(event) => setForm({ ...form, brand: event.target.value })} />
+            <datalist id="product-brands">{brands.map((brand) => <option key={brand} value={brand} />)}</datalist>
+          </Field>
+          <Field label="التصنيف" icon={<Warehouse size={16} />}>
+            <Select value={form.categoryId} onChange={(event) => setForm({ ...form, categoryId: event.target.value })}>
+              <option value="">بدون</option>
+              {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+            </Select>
+          </Field>
+          <div className="flex gap-2">
+            <Input value={categoryName} onChange={(event) => setCategoryName(event.target.value)} placeholder="تصنيف جديد" />
+            <Button type="button" variant="secondary" onClick={async () => {
+              if (!categoryName.trim()) return;
+              const id = await onAddCategory(categoryName.trim());
+              setForm({ ...form, categoryId: id });
+              setCategoryName('');
+            }}>إضافة</Button>
+          </div>
+        </div>
+      )}
+      {step === 1 && (
+        <div className="space-y-3">
+          {costPrice !== undefined && (
+            <div className="rounded-xl bg-slate-50 px-3 py-2 text-sm">
+              <div className="text-muted">سعر التكلفة من آخر شراء</div>
+              <div className="font-bold">{formatMoney(costPrice)}</div>
+            </div>
+          )}
+          <Field label="سعر البيع" error={issues.errors.salePrice} warning={issues.warnings.salePrice} hint="تكلفة الشراء تتحدث وحدها من فاتورة المشتريات">
+            <NumberInput value={form.salePrice} onValueChange={(value) => setForm({ ...form, salePrice: value })} />
+          </Field>
+          <Field label="سعر الجملة">
+            <NumberInput value={form.wholesalePrice} onValueChange={(value) => setForm({ ...form, wholesalePrice: value })} />
+          </Field>
+          <Field label="حد الطلب" hint="لو الرصيد نزل عن الرقم ده يظهر تنبيه نقص">
+            <NumberInput value={form.minStock} onValueChange={(value) => setForm({ ...form, minStock: value })} />
+          </Field>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="وحدة العبوة">
+              <Input value={form.packUnit} placeholder="كرتونة" onChange={(event) => setForm({ ...form, packUnit: event.target.value })} />
+            </Field>
+            <Field label="القطع في العبوة">
+              <NumberInput value={form.packSize} onValueChange={(value) => setForm({ ...form, packSize: value })} />
+            </Field>
+          </div>
+        </div>
+      )}
+      {step === 2 && (
+        fields.length === 0 ? <Empty text="لا حقول إضافية" hint="تقدر تضيفها من إدارة الحقول، والخطوة دي اختيارية" /> : (
+          <div className="space-y-3">
+            {fields.map((field) => (
+              <Field key={field.id} label={field.label}>
+                {field.fieldType === 'SELECT' ? (
+                  <Select value={fieldValues[field.id] || ''} onChange={(event) => setFieldValues({ ...fieldValues, [field.id]: event.target.value })}>
+                    <option value="">—</option>
+                    {(field.options || '').split(',').map((option) => option.trim()).filter(Boolean).map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </Select>
+                ) : (
+                  <Input
+                    type={field.fieldType === 'NUMBER' ? 'number' : field.fieldType === 'DATE' ? 'date' : 'text'}
+                    value={fieldValues[field.id] || ''}
+                    onChange={(event) => setFieldValues({ ...fieldValues, [field.id]: event.target.value })}
+                  />
+                )}
+              </Field>
+            ))}
+          </div>
+        )
+      )}
+      <div className="mt-4 flex gap-2">
+        {step > 0 && <Button type="button" variant="secondary" onClick={() => setStep((current) => current - 1)}>السابق</Button>}
+        {step < 2 ? (
+          <Button type="button" className="flex-1" disabled={blocked} onClick={() => setStep((current) => current + 1)}>التالي</Button>
+        ) : (
+          <Button type="button" className="flex-1" onClick={onSubmit}>{submitLabel}</Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ProductsPage() {
+  const confirm = useConfirm();
+  const toast = useToast();
+  const { user } = useAuth();
+  const importRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+  const [pendingImage, setPendingImage] = useState<File | null>(null);
+  const canImport = user?.role === 'ADMIN' || user?.role === 'WAREHOUSE';
   const [items, setItems] = useState<Product[]>([]);
   const [fields, setFields] = useState<CustomField[]>([]);
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
-  const [newCategory, setNewCategory] = useState('');
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialQuery);
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [fieldsOpen, setFieldsOpen] = useState(false);
@@ -78,11 +275,12 @@ export function ProductsPage() {
     fieldType: 'TEXT',
     options: '',
   });
+  const [listFilter, setListFilter] = useState<'all' | 'low' | 'barcode' | 'loss'>('all');
+  const [viewMode, setViewMode] = useState<'table' | 'cards'>(() => (localStorage.getItem(VIEW_KEY) === 'cards' ? 'cards' : 'table'));
 
   async function load() {
-    const q = search ? `?search=${encodeURIComponent(search)}` : '';
     const [products, defs, cats] = await Promise.all([
-      api<Product[]>(`/products${q}`),
+      api<Product[]>('/products'),
       api<CustomField[]>('/products/fields'),
       api<{ id: string; name: string }[]>('/products/categories'),
     ]);
@@ -95,35 +293,144 @@ export function ProductsPage() {
     load();
   }, []);
 
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return items.filter((product) => {
+      const qty = product.stockBalances.reduce((sum, row) => sum + row.quantity, 0);
+      const text = [product.sku, product.name, product.barcode || '', product.brand || '', product.unit].join(' ').toLowerCase();
+      if (q && !text.includes(q)) return false;
+      if (listFilter === 'low') return product.minStock > 0 && qty <= product.minStock;
+      if (listFilter === 'barcode') return !product.barcode;
+      if (listFilter === 'loss') return product.costPrice > 0 && product.salePrice < product.costPrice;
+      return true;
+    });
+  }, [items, search, listFilter]);
+
+  const stats = useMemo(() => {
+    const low = items.filter((product) => {
+      const qty = product.stockBalances.reduce((sum, row) => sum + row.quantity, 0);
+      return product.minStock > 0 && qty <= product.minStock;
+    }).length;
+    return {
+      total: items.length,
+      low,
+      noBarcode: items.filter((product) => !product.barcode).length,
+      loss: items.filter((product) => product.costPrice > 0 && product.salePrice < product.costPrice).length,
+      stockValue: items.reduce((sum, product) => sum + product.costPrice * product.stockBalances.reduce((s, row) => s + row.quantity, 0), 0),
+      units: items.reduce((sum, product) => sum + product.stockBalances.reduce((s, row) => s + row.quantity, 0), 0),
+    };
+  }, [items]);
+
+  const pager = usePagedList(visible, `${search}:${listFilter}`);
+  const productColumns = useColumns('m5azen.cols.products', [
+    { id: 'sku', label: 'الكود' },
+    { id: 'barcode', label: 'الباركود' },
+    { id: 'name', label: 'الاسم' },
+    { id: 'category', label: 'القسم' },
+    { id: 'cost', label: 'سعر الشراء' },
+    { id: 'margin', label: 'نسبة الربح' },
+    { id: 'sale', label: 'سعر البيع' },
+    { id: 'min', label: 'حد الطلب' },
+    { id: 'qty', label: 'الرصيد' },
+    ...fields.slice(0, 3).map((field) => ({ id: `field-${field.id}`, label: field.label })),
+  ]);
+  const brands = useMemo(() => [...new Set(items.map((product) => product.brand).filter(Boolean))] as string[], [items]);
+  const units = useMemo(() => [...new Set(items.map((product) => product.unit).filter(Boolean))], [items]);
+
+  useEffect(() => {
+    if (!createOpen) return;
+    const timer = window.setTimeout(() => {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ form: createForm, fields: createFieldValues }));
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [createOpen, createForm, createFieldValues]);
+
+  async function exportProducts() {
+    const wb = new ExcelJS.Workbook();
+    const sheet = wb.addWorksheet('الأصناف');
+    sheet.columns = [
+      { header: 'الكود', key: 'sku', width: 16 },
+      { header: 'الاسم', key: 'name', width: 28 },
+      { header: 'الوحدة', key: 'unit', width: 12 },
+      { header: 'سعر البيع', key: 'salePrice', width: 14 },
+      { header: 'الرصيد', key: 'qty', width: 12 },
+    ];
+    items.forEach((product) => {
+      sheet.addRow({
+        sku: product.sku,
+        name: product.name,
+        unit: product.unit,
+        salePrice: product.salePrice,
+        qty: product.stockBalances.reduce((sum, row) => sum + row.quantity, 0),
+      });
+    });
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'products.xlsx';
+    link.click();
+  }
+
   function fieldPayload(values: Record<string, string>) {
     return fields
       .map((f) => ({ fieldId: f.id, value: (values[f.id] || '').trim() }))
       .filter((fv) => fv.value);
   }
 
-  async function saveCreate() {
-    await api('/products', {
+  async function uploadProductImage(id: string, file: File) {
+    const body = new FormData();
+    body.append('file', file);
+    const token = localStorage.getItem('m5azen_token');
+    const response = await fetch(`${getApiBase()}/api/products/${id}/image`, {
       method: 'POST',
-      body: JSON.stringify({
-        sku: createForm.sku,
-        name: createForm.name,
-        unit: createForm.unit,
-        costPrice: 0,
-        salePrice: createForm.salePrice === '' ? 0 : createForm.salePrice,
-        wholesalePrice: createForm.wholesalePrice === '' ? 0 : createForm.wholesalePrice,
-        minStock: createForm.minStock === '' ? 0 : createForm.minStock,
-        barcode: createForm.barcode,
-        brand: createForm.brand,
-        categoryId: createForm.categoryId || undefined,
-        packUnit: createForm.packUnit,
-        packSize: createForm.packSize === '' ? 1 : createForm.packSize,
-        fieldValues: fieldPayload(createFieldValues),
-      }),
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body,
     });
-    setCreateOpen(false);
-    setCreateForm(emptyCreate);
-    setCreateFieldValues({});
-    load();
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({} as { message?: string }));
+      throw new Error(payload.message || 'تعذر رفع الصورة');
+    }
+    return response.json() as Promise<{ imageFile?: string }>;
+  }
+
+  async function saveCreate() {
+    const problems = productIssues(createForm, items).errors;
+    if (problems.sku || problems.name || problems.barcode || problems.salePrice) {
+      toast.error('راجع الحقول المظللة قبل الحفظ');
+      return;
+    }
+    try {
+      const created = await api<{ id: string }>('/products', {
+        method: 'POST',
+        body: JSON.stringify({
+          sku: createForm.sku.trim(),
+          name: createForm.name.trim(),
+          unit: createForm.unit,
+          costPrice: 0,
+          salePrice: createForm.salePrice === '' ? 0 : createForm.salePrice,
+          wholesalePrice: createForm.wholesalePrice === '' ? 0 : createForm.wholesalePrice,
+          minStock: createForm.minStock === '' ? 0 : createForm.minStock,
+          barcode: createForm.barcode.trim(),
+          brand: createForm.brand,
+          categoryId: createForm.categoryId || undefined,
+          packUnit: createForm.packUnit,
+          packSize: createForm.packSize === '' ? 1 : createForm.packSize,
+          fieldValues: fieldPayload(createFieldValues),
+        }),
+      });
+      if (pendingImage) await uploadProductImage(created.id, pendingImage);
+      setCreateOpen(false);
+      setCreateForm(emptyCreate);
+      setCreateFieldValues({});
+      setPendingImage(null);
+      localStorage.removeItem(DRAFT_KEY);
+      toast.success('تم حفظ الصنف');
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'تعذر حفظ الصنف');
+    }
   }
 
   function openEdit(p: Product) {
@@ -149,26 +456,36 @@ export function ProductsPage() {
 
   async function saveEdit() {
     if (!editing) return;
-    await api(`/products/${editing.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        sku: editForm.sku,
-        name: editForm.name,
-        unit: editForm.unit,
-        salePrice: editForm.salePrice === '' ? 0 : editForm.salePrice,
-        wholesalePrice: editForm.wholesalePrice === '' ? 0 : editForm.wholesalePrice,
-        minStock: editForm.minStock === '' ? 0 : editForm.minStock,
-        barcode: editForm.barcode,
-        brand: editForm.brand,
-        categoryId: editForm.categoryId || null,
-        packUnit: editForm.packUnit,
-        packSize: editForm.packSize === '' ? 1 : editForm.packSize,
-        fieldValues: fieldPayload(editFieldValues),
-      }),
-    });
-    setEditOpen(false);
-    setEditing(null);
-    load();
+    const problems = productIssues(editForm, items, editing.id, editing.costPrice).errors;
+    if (problems.sku || problems.name || problems.barcode || problems.salePrice) {
+      toast.error('راجع الحقول المظللة قبل الحفظ');
+      return;
+    }
+    try {
+      await api(`/products/${editing.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          sku: editForm.sku.trim(),
+          name: editForm.name.trim(),
+          unit: editForm.unit,
+          salePrice: editForm.salePrice === '' ? 0 : editForm.salePrice,
+          wholesalePrice: editForm.wholesalePrice === '' ? 0 : editForm.wholesalePrice,
+          minStock: editForm.minStock === '' ? 0 : editForm.minStock,
+          barcode: editForm.barcode.trim(),
+          brand: editForm.brand,
+          categoryId: editForm.categoryId || null,
+          packUnit: editForm.packUnit,
+          packSize: editForm.packSize === '' ? 1 : editForm.packSize,
+          fieldValues: fieldPayload(editFieldValues),
+        }),
+      });
+      setEditOpen(false);
+      setEditing(null);
+      toast.success('تم تحديث الصنف');
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'تعذر تحديث الصنف');
+    }
   }
 
   async function saveFieldDef() {
@@ -181,197 +498,300 @@ export function ProductsPage() {
   }
 
   async function deleteFieldDef(id: string) {
-    if (!confirm('حذف الحقل من كل الأصناف؟')) return;
+    const ok = await confirm({ title: 'حذف الحقل', message: 'حذف الحقل من كل الأصناف؟', confirmLabel: 'حذف', danger: true });
+    if (!ok) return;
     await api(`/products/fields/${id}`, { method: 'DELETE' });
+    toast.success('تم حذف الحقل');
     load();
   }
 
-  function renderFieldInputs(
-    values: Record<string, string>,
-    setValues: (v: Record<string, string>) => void,
-  ) {
-    if (!fields.length) return null;
-    return (
-      <div className="space-y-2 rounded-xl border border-dashed border-slate-200 p-3">
-        <div className="text-sm font-semibold text-slate-700">حقول إضافية (اختياري)</div>
-        <p className="text-xs text-muted">املأ اللي يخص الصنف ده، وسيب الباقي فاضي</p>
-        {fields.map((f) => (
-          <div key={f.id}>
-            <Label>{f.label}</Label>
-            {f.fieldType === 'SELECT' ? (
-              <Select
-                value={values[f.id] || ''}
-                onChange={(e) => setValues({ ...values, [f.id]: e.target.value })}
-              >
-                <option value="">—</option>
-                {(f.options || '').split(',').map((o) => o.trim()).filter(Boolean).map((o) => (
-                  <option key={o} value={o}>{o}</option>
-                ))}
-              </Select>
-            ) : (
-              <Input
-                type={f.fieldType === 'NUMBER' ? 'number' : f.fieldType === 'DATE' ? 'date' : 'text'}
-                value={values[f.id] || ''}
-                onChange={(e) => setValues({ ...values, [f.id]: e.target.value })}
-              />
-            )}
-          </div>
-        ))}
-      </div>
-    );
+  function openCreate() {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    let restored = false;
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as { form?: ProductForm; fields?: Record<string, string> };
+        if (parsed.form && (parsed.form.sku || parsed.form.name || parsed.form.barcode)) {
+          setCreateForm({ ...emptyCreate, ...parsed.form });
+          setCreateFieldValues(parsed.fields || {});
+          restored = true;
+        }
+      } catch {
+        localStorage.removeItem(DRAFT_KEY);
+      }
+    }
+    if (!restored) {
+      setCreateForm(emptyCreate);
+      setCreateFieldValues({});
+    } else toast.info('تم استرجاع المسودة المحفوظة تلقائيًا');
+    setCreateOpen(true);
+  }
+
+  async function importProducts(file: File) {
+    setImporting(true);
+    try {
+      const body = new FormData();
+      body.append('file', file);
+      const token = localStorage.getItem('m5azen_token');
+      const response = await fetch(`${getApiBase()}/api/products/import-file`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body,
+      });
+      const payload = await response.json().catch(() => ({} as { message?: string | string[]; created?: number; failed?: number; errors?: { message: string }[] }));
+      if (!response.ok) {
+        const message = Array.isArray(payload.message) ? payload.message.join(', ') : payload.message;
+        throw new Error(message || 'تعذر استيراد الملف');
+      }
+      const created = payload.created || 0;
+      const failed = payload.failed || 0;
+      if (!created) throw new Error(payload.errors?.[0]?.message || 'لم يُحفظ أي صنف');
+      toast.success(failed ? `تم تسجيل ${created} صنف، وتعذر ${failed}` : `تم تسجيل ${created} صنف`);
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'تعذر استيراد الملف');
+    } finally {
+      setImporting(false);
+      if (importRef.current) importRef.current.value = '';
+    }
+  }
+
+  async function addCategory(name: string) {
+    const cat = await api<{ id: string; name: string }>('/products/categories', { method: 'POST', body: JSON.stringify({ name }) });
+    setCategories((prev) => (prev.some((row) => row.id === cat.id) ? prev : [...prev, cat]));
+    toast.success('تمت إضافة التصنيف');
+    return cat.id;
   }
 
   return (
     <div>
       <PageHeader
         title="الأصناف"
-        subtitle="التكلفة من آخر شراء · سعر البيع والحقول الإضافية هنا"
+        subtitle="أدخل الصنف على خطوات، والجدول يتصفى فورًا"
         actions={
           <>
-            <Input
-              className="w-56"
-              placeholder="بحث..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && load()}
-            />
-            <Button variant="secondary" onClick={load}>بحث</Button>
-            <Button variant="secondary" onClick={() => setFieldsOpen(true)}>
-              <Columns3 size={16} /> إدارة الحقول
-            </Button>
-            <Button onClick={() => { setCreateFieldValues({}); setCreateOpen(true); }}>
-              <Plus size={16} /> صنف جديد
-            </Button>
+            {canImport && (
+              <>
+                <input
+                  ref={importRef}
+                  className="hidden"
+                  type="file"
+                  accept=".xlsx,.xlsm,.csv,.docx,.pdf,application/pdf"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) importProducts(file);
+                  }}
+                />
+                <Button variant="secondary" disabled={importing} onClick={() => importRef.current?.click()}>
+                  <Upload size={16} /> {importing ? 'جاري الاستيراد...' : 'استيراد'}
+                </Button>
+              </>
+            )}
+            <Button variant="secondary" onClick={() => setFieldsOpen(true)}><Columns3 size={16} /> إدارة الحقول</Button>
+            <Button onClick={openCreate}><Plus size={16} /> صنف جديد</Button>
           </>
         }
       />
+      <StatGrid cols={5}>
+        <StatCard label="إجمالي الأصناف" value={stats.total} hint={`${stats.units.toLocaleString('ar-EG')} وحدة في المخازن`} icon={Package} tone="brand" active={listFilter === 'all'} onClick={() => setListFilter('all')} />
+        <StatCard label="قيمة المخزون بالتكلفة" value={formatMoney(stats.stockValue)} hint="سعر الشراء × الرصيد" icon={Coins} tone="emerald" />
+        <StatCard label="تحت حد الطلب" value={stats.low} hint="تحتاج إعادة شراء" icon={TriangleAlert} tone="amber" active={listFilter === 'low'} onClick={() => setListFilter('low')} />
+        <StatCard label="بدون باركود" value={stats.noBarcode} hint="أضف باركود لتسريع البيع" icon={Barcode} tone="sky" active={listFilter === 'barcode'} onClick={() => setListFilter('barcode')} />
+        <StatCard label="سعر أقل من التكلفة" value={stats.loss} hint="مراجعة التسعير" icon={TrendingDown} tone="rose" active={listFilter === 'loss'} onClick={() => setListFilter('loss')} />
+      </StatGrid>
       <Card>
-        {items.length === 0 ? <Empty /> : (
+        <div className="mb-4 flex flex-wrap gap-1.5 rounded-xl bg-slate-100/80 p-1 sm:w-fit">
+          {([['all', 'الكل', stats.total], ['low', 'نقص مخزون', stats.low], ['barcode', 'بدون باركود', stats.noBarcode], ['loss', 'سعر خاسر', stats.loss]] as const).map(([key, label, count]) => (
+            <button key={key} type="button" onClick={() => setListFilter(key)} className={`inline-flex h-8 items-center gap-2 rounded-lg px-3 text-[13px] font-bold transition ${listFilter === key ? 'bg-white text-brand-800 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-800'}`}>
+              {label}
+              <span className={`rounded-md px-1.5 text-[11px] tabular-nums ${listFilter === key ? 'bg-brand-50 text-brand-700' : 'bg-white/70 text-slate-500'}`}>{count}</span>
+            </button>
+          ))}
+        </div>
+        <ListBar
+          search={search}
+          onSearch={setSearch}
+          placeholder="بحث بالاسم، الكود، الباركود..."
+          view={viewMode}
+          onView={(mode) => { setViewMode(mode); localStorage.setItem(VIEW_KEY, mode); }}
+          onExport={exportProducts}
+          columns={productColumns.columns}
+          onToggleColumn={productColumns.toggle}
+        />
+        {visible.length === 0 ? <Empty text="لا أصناف مطابقة" hint="غيّر البحث أو الفلتر" /> : viewMode === 'cards' ? (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {pager.slice.map((product) => {
+                const qty = product.stockBalances.reduce((sum, row) => sum + row.quantity, 0);
+                const low = product.minStock > 0 && qty <= product.minStock;
+                return (
+                  <button key={product.id} type="button" className="lift overflow-hidden rounded-2xl border border-slate-200 bg-white text-right" onClick={() => openEdit(product)}>
+                    <div className="flex items-center gap-3 p-4">
+                      <ProductThumb product={product} size="lg" />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-mono text-[11px] font-bold text-brand-700" dir="ltr">{product.sku}</div>
+                        <div className="mt-0.5 line-clamp-2 font-bold leading-6 text-slate-900">{product.name}</div>
+                        <div className="text-xs text-muted">{product.category?.name || product.brand || 'بدون تصنيف'}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50/70 px-4 py-2.5 text-sm">
+                      <span className="font-extrabold text-slate-900 tabular-nums">{formatMoney(product.salePrice)}</span>
+                      <Badge tone={low ? 'rose' : 'emerald'}>{qty.toLocaleString('ar-EG')} {product.unit}</Badge>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+          </>
+        ) : (
+          <>
           <Table>
             <thead>
               <tr>
-                <Th>الكود</Th>
-                <Th>الاسم</Th>
-                <Th>الوحدة</Th>
-                <Th>تكلفة (من الشراء)</Th>
-                <Th>سعر البيع</Th>
-                {fields.slice(0, 3).map((f) => <Th key={f.id}>{f.label}</Th>)}
-                <Th>الرصيد</Th>
-                <Th></Th>
+                <Th>الإجراءات</Th>
+                {productColumns.visible('sku') && <Th>الكود</Th>}
+                {productColumns.visible('barcode') && <Th>الباركود</Th>}
+                {productColumns.visible('name') && <Th>الاسم</Th>}
+                {productColumns.visible('category') && <Th>القسم</Th>}
+                {productColumns.visible('cost') && <Th>سعر الشراء</Th>}
+                {productColumns.visible('margin') && <Th>نسبة الربح</Th>}
+                {productColumns.visible('sale') && <Th>سعر البيع</Th>}
+                {productColumns.visible('min') && <Th>حد الطلب</Th>}
+                {fields.slice(0, 3).map((field) => productColumns.visible(`field-${field.id}`) && <Th key={field.id}>{field.label}</Th>)}
+                {productColumns.visible('qty') && <Th>الرصيد</Th>}
               </tr>
             </thead>
             <tbody>
-              {items.map((p) => {
+              {pager.slice.map((p) => {
                 const qty = p.stockBalances.reduce((s, b) => s + b.quantity, 0);
+                const low = p.minStock > 0 && qty <= p.minStock;
                 const valueMap = Object.fromEntries(p.fieldValues.map((fv) => [fv.fieldId, fv.value]));
+                const margin = p.costPrice > 0 ? `${Math.round(((p.salePrice - p.costPrice) / p.costPrice) * 100)}%` : '—';
                 return (
-                  <tr key={p.id} className={qty <= p.minStock && p.minStock > 0 ? 'bg-amber-50/60' : ''}>
-                    <Td className="font-mono text-xs">{p.sku}</Td>
-                    <Td className="font-semibold">{p.name}</Td>
-                    <Td>{p.unit}</Td>
-                    <Td className="text-slate-600">{formatMoney(p.costPrice)}</Td>
-                    <Td className="font-bold text-brand-800">{formatMoney(p.salePrice)}</Td>
-                    {fields.slice(0, 3).map((f) => (
-                      <Td key={f.id} className="text-sm text-slate-600">{valueMap[f.id] || '—'}</Td>
-                    ))}
-                    <Td className="font-bold">{qty}</Td>
+                  <tr key={p.id}>
                     <Td>
-                      <Button variant="secondary" className="!px-2 !py-1" onClick={() => openEdit(p)}>
-                        <Pencil size={14} /> تعديل
-                      </Button>
+                      <IconAction label="تعديل" onClick={() => openEdit(p)}><Pencil size={14} /></IconAction>
                     </Td>
+                    {productColumns.visible('sku') && <Td><span className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-xs font-bold text-slate-700" dir="ltr">{p.sku}</span></Td>}
+                    {productColumns.visible('barcode') && <Td><span className="font-mono text-xs text-slate-500" dir="ltr">{p.barcode || '—'}</span></Td>}
+                    {productColumns.visible('name') && (
+                      <Td>
+                        <div className="flex min-w-[14rem] items-center gap-3">
+                          <ProductThumb product={p} />
+                          <div className="min-w-0">
+                            <div className="truncate font-bold text-slate-900">{p.name}</div>
+                            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] font-semibold">
+                              <span className={`h-1.5 w-1.5 rounded-full ${low ? 'bg-rose-500' : 'bg-emerald-500'}`} />
+                              <span className={low ? 'text-rose-600' : 'text-emerald-700'}>{low ? 'تحت حد الطلب' : 'متوفر'}</span>
+                              <span className="text-muted">· {p.brand || p.unit}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </Td>
+                    )}
+                    {productColumns.visible('category') && <Td>{p.category?.name ? <Badge tone="brand">{p.category.name}</Badge> : <span className="text-muted">{p.brand || '—'}</span>}</Td>}
+                    {productColumns.visible('cost') && <Td className="whitespace-nowrap text-slate-600">{formatMoney(p.costPrice)}</Td>}
+                    {productColumns.visible('margin') && <Td><Badge tone={p.costPrice > 0 && p.salePrice < p.costPrice ? 'rose' : 'emerald'}>{margin}</Badge></Td>}
+                    {productColumns.visible('sale') && <Td className="whitespace-nowrap font-extrabold text-slate-900">{formatMoney(p.salePrice)}</Td>}
+                    {productColumns.visible('min') && <Td className="text-slate-500">{p.minStock || '—'}</Td>}
+                    {fields.slice(0, 3).map((field) => productColumns.visible(`field-${field.id}`) && (
+                      <Td key={field.id}>{valueMap[field.id] || '—'}</Td>
+                    ))}
+                    {productColumns.visible('qty') && (
+                      <Td>
+                        <div className="min-w-[6rem]">
+                          <div className={`font-extrabold ${low ? 'text-rose-700' : 'text-slate-900'}`}>{qty.toLocaleString('ar-EG')} <span className="text-xs font-semibold text-muted">{p.unit}</span></div>
+                          {p.minStock > 0 && (
+                            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                              <div className={`h-full rounded-full ${low ? 'bg-rose-500' : 'bg-emerald-500'}`} style={{ width: `${Math.min(100, Math.max(6, (qty / (p.minStock * 3)) * 100))}%` }} />
+                            </div>
+                          )}
+                        </div>
+                      </Td>
+                    )}
                   </tr>
                 );
               })}
             </tbody>
           </Table>
+          <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+          </>
         )}
       </Card>
 
-      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="صنف جديد">
-        <div className="space-y-3">
-          <div><Label>كود الصنف</Label><Input value={createForm.sku} onChange={(e) => setCreateForm({ ...createForm, sku: e.target.value })} /></div>
-          <div><Label>اسم الصنف</Label><Input value={createForm.name} onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })} /></div>
-          <div><Label>وحدة القياس</Label><Input value={createForm.unit} onChange={(e) => setCreateForm({ ...createForm, unit: e.target.value })} /></div>
-          <div><Label>الباركود</Label><Input value={createForm.barcode} onChange={(e) => setCreateForm({ ...createForm, barcode: e.target.value })} /></div>
-          <div><Label>الماركة</Label><Input value={createForm.brand} onChange={(e) => setCreateForm({ ...createForm, brand: e.target.value })} /></div>
-          <div>
-            <Label>التصنيف</Label>
-            <Select value={createForm.categoryId} onChange={(e) => setCreateForm({ ...createForm, categoryId: e.target.value })}>
-              <option value="">بدون</option>
-              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </Select>
-          </div>
-          <div className="flex gap-2">
-            <Input value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="تصنيف جديد" />
-            <Button type="button" variant="secondary" onClick={async () => {
-              if (!newCategory.trim()) return;
-              const cat = await api<{ id: string; name: string }>('/products/categories', { method: 'POST', body: JSON.stringify({ name: newCategory.trim() }) });
-              setCategories((prev) => [...prev, cat]);
-              setCreateForm((f) => ({ ...f, categoryId: cat.id }));
-              setNewCategory('');
-            }}>إضافة</Button>
-          </div>
-          <div>
-            <Label>سعر الجملة</Label>
-            <NumberInput value={createForm.wholesalePrice} onValueChange={(v) => setCreateForm({ ...createForm, wholesalePrice: v })} />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div><Label>وحدة العبوة</Label><Input value={createForm.packUnit} placeholder="كرتونة" onChange={(e) => setCreateForm({ ...createForm, packUnit: e.target.value })} /></div>
-            <div><Label>القطع في العبوة</Label><NumberInput value={createForm.packSize} onValueChange={(v) => setCreateForm({ ...createForm, packSize: v })} /></div>
-          </div>
-          <div>
-            <Label>سعر البيع</Label>
-            <NumberInput value={createForm.salePrice} onValueChange={(v) => setCreateForm({ ...createForm, salePrice: v })} />
-            <p className="mt-1 text-xs text-muted">سعر التكلفة يتحدث تلقائياً من فواتير الشراء</p>
-          </div>
-          <div>
-            <Label>الحد الأدنى للمخزون</Label>
-            <NumberInput value={createForm.minStock} onValueChange={(v) => setCreateForm({ ...createForm, minStock: v })} />
-          </div>
-          {renderFieldInputs(createFieldValues, setCreateFieldValues)}
-          <Button className="w-full" onClick={saveCreate}>حفظ</Button>
-        </div>
+      <Modal open={createOpen} onClose={() => { setCreateOpen(false); setPendingImage(null); }} title="صنف جديد" wide>
+        <label className="mb-4 flex cursor-pointer items-center gap-3 rounded-2xl border border-dashed border-slate-300 px-4 py-3 text-sm">
+          <input className="hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setPendingImage(event.target.files?.[0] || null)} />
+          <span className="grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-xl bg-slate-100 text-xs text-muted">
+            {pendingImage ? <img src={URL.createObjectURL(pendingImage)} alt="" className="h-full w-full object-cover" /> : 'صورة'}
+          </span>
+          <span>{pendingImage ? pendingImage.name : 'أضف صورة للصنف، وتظهر في نقطة البيع'}</span>
+        </label>
+        <ProductFormWizard
+          form={createForm}
+          setForm={setCreateForm}
+          issues={productIssues(createForm, items)}
+          brands={brands}
+          units={units}
+          categories={categories}
+          fields={fields}
+          fieldValues={createFieldValues}
+          setFieldValues={setCreateFieldValues}
+          onAddCategory={addCategory}
+          onSubmit={saveCreate}
+          submitLabel="حفظ الصنف"
+        />
       </Modal>
 
-      <Modal open={editOpen} onClose={() => setEditOpen(false)} title="تعديل صنف">
+      <Modal open={editOpen} onClose={() => setEditOpen(false)} title="تعديل صنف" wide>
         {editing && (
-          <div className="space-y-3">
-            <div><Label>كود الصنف</Label><Input value={editForm.sku} onChange={(e) => setEditForm({ ...editForm, sku: e.target.value })} /></div>
-            <div><Label>اسم الصنف</Label><Input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} /></div>
-            <div><Label>وحدة القياس</Label><Input value={editForm.unit} onChange={(e) => setEditForm({ ...editForm, unit: e.target.value })} /></div>
-            <div><Label>الباركود</Label><Input value={editForm.barcode} onChange={(e) => setEditForm({ ...editForm, barcode: e.target.value })} /></div>
-            <div><Label>الماركة</Label><Input value={editForm.brand} onChange={(e) => setEditForm({ ...editForm, brand: e.target.value })} /></div>
-            <div>
-              <Label>التصنيف</Label>
-              <Select value={editForm.categoryId} onChange={(e) => setEditForm({ ...editForm, categoryId: e.target.value })}>
-                <option value="">بدون</option>
-                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </Select>
-            </div>
-            <div>
-              <Label>سعر الجملة</Label>
-              <NumberInput value={editForm.wholesalePrice} onValueChange={(v) => setEditForm({ ...editForm, wholesalePrice: v })} />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div><Label>وحدة العبوة</Label><Input value={editForm.packUnit} placeholder="كرتونة" onChange={(e) => setEditForm({ ...editForm, packUnit: e.target.value })} /></div>
-              <div><Label>القطع في العبوة</Label><NumberInput value={editForm.packSize} onValueChange={(v) => setEditForm({ ...editForm, packSize: v })} /></div>
-            </div>
-            <div className="rounded-xl bg-slate-50 px-3 py-2 text-sm">
-              <div className="text-muted">سعر التكلفة (من آخر شراء)</div>
-              <div className="font-bold text-slate-800">{formatMoney(editing.costPrice)}</div>
-            </div>
-            <div>
-              <Label>سعر البيع</Label>
-              <NumberInput value={editForm.salePrice} onValueChange={(v) => setEditForm({ ...editForm, salePrice: v })} />
-            </div>
-            <div>
-              <Label>الحد الأدنى للمخزون</Label>
-              <NumberInput value={editForm.minStock} onValueChange={(v) => setEditForm({ ...editForm, minStock: v })} />
-            </div>
-            {renderFieldInputs(editFieldValues, setEditFieldValues)}
-            <Button className="w-full" onClick={saveEdit}>حفظ التعديلات</Button>
-          </div>
+          <>
+          <label className="mb-4 flex cursor-pointer items-center gap-3 rounded-2xl border border-dashed border-slate-300 px-4 py-3 text-sm">
+            <input
+              className="hidden"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              onChange={async (event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (!file || !editing) return;
+                try {
+                  const saved = await uploadProductImage(editing.id, file);
+                  setEditing({ ...editing, imageFile: saved.imageFile || editing.imageFile });
+                  toast.success('تم حفظ صورة الصنف');
+                  load();
+                } catch (error) {
+                  toast.error(error instanceof Error ? error.message : 'تعذر رفع الصورة');
+                }
+              }}
+            />
+            <span className="grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-xl bg-slate-100 text-xs text-muted">
+              {editing.imageFile ? <img src={productImageUrl(editing.id, editing.imageFile)} alt="" className="h-full w-full object-cover" /> : 'صورة'}
+            </span>
+            <span>غيّر صورة الصنف لتظهر في نقطة البيع</span>
+          </label>
+          <ProductFormWizard
+            key={editing.id}
+            form={editForm}
+            setForm={setEditForm}
+            issues={productIssues(editForm, items, editing.id, editing.costPrice)}
+            brands={brands}
+            units={units}
+            categories={categories}
+            fields={fields}
+            fieldValues={editFieldValues}
+            setFieldValues={setEditFieldValues}
+            costPrice={editing.costPrice}
+            onAddCategory={async (name) => {
+              const id = await addCategory(name);
+              setEditForm((current) => ({ ...current, categoryId: id }));
+              return id;
+            }}
+            onSubmit={saveEdit}
+            submitLabel="حفظ التعديلات"
+          />
+          </>
         )}
       </Modal>
 

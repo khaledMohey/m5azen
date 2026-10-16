@@ -3,6 +3,10 @@ dist
 build
 .env
 .env.local
+.env.*
+!.env.example
+logs
+.wrangler
 *.log
 .DS_Store
 apps/api/prisma/*.db
@@ -16,3 +20,6 @@ backups
 coverage
 *.local
 *.tsbuildinfo
+
+.vercel
+.env*

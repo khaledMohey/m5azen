@@ -1,10 +1,40 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Download, FileSpreadsheet, Printer } from 'lucide-react';
+import {
+  AlertTriangle, ArrowDownLeft, ArrowUpRight, Boxes, Coins, Download, FileSpreadsheet, Package, PackageX, Percent, Printer, ShoppingCart,
+  TrendingDown, TrendingUp, Wallet,
+} from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { api, formatDate, formatMoney, getApiBase } from '../lib/api';
+import { DueAmount } from '../components/DueAmount';
 import {
-  Button, Card, Empty, Input, Label, PageHeader, PrintHeader, SearchBox, Select, StatusBadge, Table, Td, Th,
+  Badge, Button, Card, CardHeader, Empty, Input, Label, PageHeader, PrintHeader, SearchBox, Select, StatCard, StatGrid, StatusBadge, Table, Td, Th,
 } from '../components/ui';
+
+function ProfitView({ revenue, cogs, gross, invoiceDiff }: { revenue: number; cogs: number; gross: number; invoiceDiff: number }) {
+  const margin = revenue > 0 ? (gross / revenue) * 100 : 0;
+  const cogsPct = revenue > 0 ? Math.min(100, Math.max(0, (cogs / revenue) * 100)) : 0;
+  return (
+    <div className="space-y-4">
+      <StatGrid>
+        <StatCard label="صافي إيراد البيع" value={formatMoney(revenue)} hint="بعد المرتجعات" icon={ShoppingCart} tone="emerald" />
+        <StatCard label="تكلفة البضاعة المباعة" value={formatMoney(cogs)} hint="من تكلفة الصنف وقت البيع" icon={Coins} tone="sky" />
+        <StatCard label="مجمل الربح" value={<span className={gross >= 0 ? 'text-emerald-700' : 'text-rose-600'}>{formatMoney(gross)}</span>} hint={`فرق الفواتير ${formatMoney(invoiceDiff)}`} icon={TrendingUp} tone={gross >= 0 ? 'amber' : 'rose'} />
+        <StatCard label="هامش الربح" value={`${margin.toFixed(1)}%`} hint="مجمل الربح ÷ الإيراد" icon={Percent} tone="violet" />
+      </StatGrid>
+      <Card>
+        <CardHeader title="تركيب الإيراد" subtitle="كم من كل جنيه مبيعات يذهب للتكلفة وكم يبقى ربحًا" icon={TrendingUp} />
+        <div className="flex h-5 overflow-hidden rounded-full bg-slate-100">
+          <div className="h-full bg-gradient-to-l from-sky-400 to-sky-600 transition-all" style={{ width: `${cogsPct}%` }} />
+          <div className="h-full bg-gradient-to-l from-emerald-400 to-emerald-600 transition-all" style={{ width: `${Math.max(0, 100 - cogsPct)}%` }} />
+        </div>
+        <div className="mt-3 flex flex-wrap justify-between gap-3 text-sm">
+          <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-sky-500" /> تكلفة البضاعة <b className="tabular-nums">{cogsPct.toFixed(1)}%</b></span>
+          <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-emerald-500" /> مجمل الربح <b className="tabular-nums">{(100 - cogsPct).toFixed(1)}%</b></span>
+        </div>
+      </Card>
+    </div>
+  );
+}
 
 type InventoryRow = {
   quantity: number;
@@ -90,6 +120,7 @@ export function ReportsPage() {
   const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
   const [warehouseId, setWarehouseId] = useState('');
   const [search, setSearch] = useState('');
+  const [salesCols, setSalesCols] = useState({ customer: true, date: true, total: true, status: true });
   const [products, setProducts] = useState<ProductInsights | null>(null);
 
   const filteredInventory = useMemo(() => {
@@ -109,12 +140,12 @@ export function ReportsPage() {
   const visibleUnderpriced = products?.underpriced.filter(matchProduct) || [];
   const visibleUnsold = products?.unsold.filter(matchProduct) || [];
 
-  async function load() {
+  async function load(nextFrom = from, nextTo = to) {
     const w = await api<{ id: string; name: string }[]>('/warehouses');
     setWarehouses(w);
     const q = [
-      from ? `from=${from}` : '',
-      to ? `to=${to}` : '',
+      nextFrom ? `from=${nextFrom}` : '',
+      nextTo ? `to=${nextTo}` : '',
     ].filter(Boolean).join('&');
     const suffix = q ? `?${q}` : '';
 
@@ -133,6 +164,20 @@ export function ReportsPage() {
   }
 
   useEffect(() => { load(); }, [tab, warehouseId]);
+
+  function applyPreset(kind: 'today' | 'week' | 'month' | 'year') {
+    const end = new Date();
+    const start = new Date();
+    if (kind === 'week') start.setDate(end.getDate() - 6);
+    if (kind === 'month') start.setDate(1);
+    if (kind === 'year') start.setMonth(0, 1);
+    const iso = (value: Date) => new Date(value.getTime() - value.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    const range = { from: iso(start), to: iso(end) };
+    setFrom(range.from);
+    setTo(range.to);
+    localStorage.setItem('m5azen_report_range', JSON.stringify(range));
+    load(range.from, range.to);
+  }
 
   async function exportExcel() {
     if (tab === 'inventory') {
@@ -256,46 +301,59 @@ export function ReportsPage() {
             <SearchBox value={search} onChange={setSearch} placeholder="بحث في التقرير..." />
             <Button variant="secondary" onClick={() => window.print()}><Printer size={16} /> طباعة / PDF</Button>
             <Button variant="secondary" onClick={exportExcel}><FileSpreadsheet size={16} /> Excel</Button>
-            <Button onClick={load}><Download size={16} /> تحديث</Button>
+            <Button onClick={() => load()}><Download size={16} /> تحديث</Button>
           </>
         }
       />
 
       <PrintHeader title="تقرير AK Tech" subtitle={tab === 'inventory' ? 'المخزون' : tab === 'sales' ? 'المبيعات' : tab === 'profit' ? 'الأرباح' : tab === 'products' ? 'المنتجات' : 'الخزنة'} />
 
-      <div className="mb-4 flex flex-wrap gap-2 no-print">
+      <div className="mb-4 grid grid-cols-2 gap-2 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm sm:grid-cols-5 no-print">
         {([
-          ['inventory', 'المخزون'],
-          ['sales', 'المبيعات'],
-          ['products', 'المنتجات'],
-          ['profit', 'الأرباح'],
-          ['cash', 'الخزنة'],
-        ] as const).map(([k, label]) => (
-          <Button key={k} variant={tab === k ? 'primary' : 'secondary'} onClick={() => setTab(k)}>
-            {label}
-          </Button>
+          ['inventory', 'المخزون', Boxes],
+          ['sales', 'المبيعات', ShoppingCart],
+          ['products', 'المنتجات', Package],
+          ['profit', 'الأرباح', TrendingUp],
+          ['cash', 'الخزنة', Wallet],
+        ] as const).map(([k, label, Icon]) => (
+          <button key={k} type="button" onClick={() => setTab(k)} className={`flex h-11 items-center justify-center gap-2 rounded-xl text-[13px] font-bold transition ${tab === k ? 'bg-gradient-to-br from-brand-600 to-brand-800 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'}`}>
+            <Icon size={16} /> {label}
+          </button>
         ))}
       </div>
 
-      <Card className="mb-4 no-print">
-        <div className="grid gap-3 sm:grid-cols-4">
+      <Card className="mb-5 !p-3 no-print">
+        <div className="flex flex-wrap items-end gap-3">
           {tab === 'inventory' ? (
-            <div>
+            <div className="w-full sm:w-64">
               <Label>المخزن</Label>
               <Select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)}>
-                <option value="">الكل</option>
+                <option value="">كل المخازن</option>
                 {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
               </Select>
             </div>
           ) : (
             <>
-              <div><Label>من تاريخ</Label><Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
-              <div><Label>إلى تاريخ</Label><Input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></div>
-              <div className="flex items-end"><Button onClick={load}>تطبيق الفلتر</Button></div>
+              <div className="flex rounded-xl bg-slate-100 p-1">
+                {([['today', 'اليوم'], ['week', 'الأسبوع'], ['month', 'الشهر'], ['year', 'السنة']] as const).map(([key, label]) => (
+                  <button key={key} type="button" onClick={() => applyPreset(key)} className="h-8 rounded-lg px-3 text-xs font-bold text-slate-600 transition hover:bg-white hover:text-brand-800 hover:shadow-sm">{label}</button>
+                ))}
+              </div>
+              <div className="w-40"><Label>من تاريخ</Label><Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+              <div className="w-40"><Label>إلى تاريخ</Label><Input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+              <Button onClick={() => load()}>تطبيق الفلتر</Button>
             </>
           )}
         </div>
       </Card>
+
+      {tab === 'inventory' && (
+        <StatGrid cols={3}>
+          <StatCard label="قيمة المخزون بالتكلفة" value={formatMoney(filteredInventory.reduce((s, r) => s + r.quantity * r.product.costPrice, 0))} icon={Coins} tone="brand" />
+          <StatCard label="قيمة المخزون بسعر البيع" value={formatMoney(filteredInventory.reduce((s, r) => s + r.quantity * r.product.salePrice, 0))} icon={TrendingUp} tone="emerald" />
+          <StatCard label="إجمالي الوحدات" value={filteredInventory.reduce((s, r) => s + r.quantity, 0).toLocaleString('ar-EG')} hint={`${filteredInventory.length} رصيد`} icon={Boxes} tone="sky" />
+        </StatGrid>
+      )}
 
       {tab === 'inventory' && (
         <Card>
@@ -314,14 +372,14 @@ export function ReportsPage() {
               </thead>
               <tbody>
                 {filteredInventory.map((r, i) => (
-                  <tr key={i}>
-                    <Td>{r.warehouse.name}</Td>
-                    <Td className="font-mono text-xs">{r.product.sku}</Td>
-                    <Td>{r.product.name}</Td>
-                    <Td className="font-bold">{r.quantity}</Td>
-                    <Td>{formatMoney(r.product.costPrice)}</Td>
-                    <Td>{formatMoney(r.product.salePrice)}</Td>
-                    <Td>{formatMoney(r.quantity * r.product.costPrice)}</Td>
+                  <tr key={i} className={r.quantity <= 0 ? 'row-credit' : ''}>
+                    <Td className="text-slate-600">{r.warehouse.name}</Td>
+                    <Td><span className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-600" dir="ltr">{r.product.sku}</span></Td>
+                    <Td className="font-bold text-slate-900">{r.product.name}</Td>
+                    <Td className={`font-extrabold tabular-nums ${r.quantity <= 0 ? 'text-rose-600' : ''}`}>{r.quantity}</Td>
+                    <Td className="tabular-nums text-slate-600">{formatMoney(r.product.costPrice)}</Td>
+                    <Td className="tabular-nums text-slate-600">{formatMoney(r.product.salePrice)}</Td>
+                    <Td className="whitespace-nowrap font-bold tabular-nums">{formatMoney(r.quantity * r.product.costPrice)}</Td>
                   </tr>
                 ))}
               </tbody>
@@ -331,57 +389,59 @@ export function ReportsPage() {
       )}
 
       {tab === 'sales' && sales && (
+        <>
+        <StatGrid>
+          <StatCard label="إجمالي المبيعات" value={formatMoney(sales.total)} icon={ShoppingCart} tone="emerald" />
+          <StatCard label="المحصل" value={formatMoney(sales.paid)} hint={sales.total > 0 ? `${((sales.paid / sales.total) * 100).toFixed(0)}% من الإجمالي` : undefined} icon={Wallet} tone="sky" />
+          <StatCard label="المتبقي على العملاء" value={formatMoney(Math.max(0, sales.total - sales.paid))} icon={Coins} tone="rose" />
+          <StatCard label="عدد الفواتير" value={sales.count} hint={sales.count ? `متوسط ${formatMoney(sales.total / sales.count)}` : undefined} icon={FileSpreadsheet} tone="amber" />
+        </StatGrid>
         <Card>
-          <div className="mb-4 grid gap-3 sm:grid-cols-3">
-            <div className="rounded-xl bg-emerald-50 p-3"><div className="text-xs text-muted">الإجمالي</div><div className="text-xl font-extrabold">{formatMoney(sales.total)}</div></div>
-            <div className="rounded-xl bg-sky-50 p-3"><div className="text-xs text-muted">المحصل</div><div className="text-xl font-extrabold">{formatMoney(sales.paid)}</div></div>
-            <div className="rounded-xl bg-amber-50 p-3"><div className="text-xs text-muted">عدد الفواتير</div><div className="text-xl font-extrabold">{sales.count}</div></div>
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-sm no-print">
+            <span className="text-xs font-bold text-slate-500">الأعمدة:</span>
+            {([['customer', 'العميل'], ['date', 'التاريخ'], ['total', 'الإجمالي'], ['status', 'الحالة']] as const).map(([key, label]) => (
+              <label key={key} className={`flex cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-semibold transition ${salesCols[key] ? 'border-brand-200 bg-brand-50 text-brand-800' : 'border-slate-200 text-slate-500'}`}>
+                <input type="checkbox" className="accent-[var(--color-brand-700)]" checked={salesCols[key]} onChange={(e) => setSalesCols({ ...salesCols, [key]: e.target.checked })} />
+                {label}
+              </label>
+            ))}
           </div>
           <Table>
             <thead>
               <tr>
                 <Th>الرقم</Th>
-                <Th>العميل</Th>
-                <Th>التاريخ</Th>
-                <Th>الإجمالي</Th>
-                <Th>الحالة</Th>
+                {salesCols.customer && <Th>العميل</Th>}
+                {salesCols.date && <Th>التاريخ</Th>}
+                {salesCols.total && <Th>الإجمالي</Th>}
+                <Th>المتبقي</Th>
+                {salesCols.status && <Th>الحالة</Th>}
               </tr>
             </thead>
             <tbody>
               {sales.invoices.map((i) => (
                 <tr key={i.number} className={`status-${i.status}`}>
-                  <Td>{i.number}</Td>
-                  <Td>{i.customer.name}</Td>
-                  <Td>{formatDate(i.invoiceDate)}</Td>
-                  <Td>{formatMoney(i.total)}</Td>
-                  <Td><StatusBadge status={i.status} /></Td>
+                  <Td><span className="font-mono text-xs font-bold text-brand-700" dir="ltr">{i.number}</span></Td>
+                  {salesCols.customer && <Td className="font-semibold text-slate-800">{i.customer.name}</Td>}
+                  {salesCols.date && <Td className="whitespace-nowrap text-slate-500">{formatDate(i.invoiceDate)}</Td>}
+                  {salesCols.total && <Td className="whitespace-nowrap font-bold">{formatMoney(i.total)}</Td>}
+                  <Td>{i.status === 'CANCELLED' ? formatMoney(0) : <DueAmount date={i.invoiceDate} remaining={i.total - i.paidAmount} />}</Td>
+                  {salesCols.status && <Td><StatusBadge status={i.status} /></Td>}
                 </tr>
               ))}
             </tbody>
           </Table>
         </Card>
+        </>
       )}
 
       {tab === 'products' && products && (
         <div className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-4">
-            <div className="rounded-xl bg-rose-50 p-3">
-              <div className="text-xs text-muted">خسارة محققة</div>
-              <div className="text-xl font-extrabold text-rose-800">{formatMoney(products.lossTotal)}</div>
-            </div>
-            <div className="rounded-xl bg-orange-50 p-3">
-              <div className="text-xs text-muted">خسارة متوقعة على المخزون</div>
-              <div className="text-xl font-extrabold text-orange-800">{formatMoney(products.potentialLossTotal)}</div>
-            </div>
-            <div className="rounded-xl bg-amber-50 p-3">
-              <div className="text-xs text-muted">أصناف لا تُباع</div>
-              <div className="text-xl font-extrabold">{products.unsold.length}</div>
-            </div>
-            <div className="rounded-xl bg-slate-50 p-3">
-              <div className="text-xs text-muted">قيمة المخزون الراكد</div>
-              <div className="text-xl font-extrabold">{formatMoney(products.unsoldValue)}</div>
-            </div>
-          </div>
+          <StatGrid>
+            <StatCard label="خسارة محققة" value={<span className="text-rose-700">{formatMoney(products.lossTotal)}</span>} hint="بيع بأقل من التكلفة" icon={TrendingDown} tone="rose" />
+            <StatCard label="خسارة متوقعة على المخزون" value={<span className="text-amber-700">{formatMoney(products.potentialLossTotal)}</span>} hint="سعر البيع أقل من التكلفة" icon={AlertTriangle} tone="amber" />
+            <StatCard label="أصناف لا تُباع" value={products.unsold.length} hint={`قيمة راكدة ${formatMoney(products.unsoldValue)}`} icon={PackageX} tone="slate" />
+            <StatCard label="الأكثر مبيعاً" value={visibleSold.length} hint="صنف له مبيعات في الفترة" icon={TrendingUp} tone="emerald" />
+          </StatGrid>
 
           <Card>
             <div className="mb-3 font-bold text-emerald-800">الأكثر مبيعاً</div>
@@ -548,32 +608,22 @@ export function ReportsPage() {
       )}
 
       {tab === 'profit' && profit && (
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Card className="bg-emerald-50 border-emerald-100">
-            <div className="text-sm text-muted">صافي إيراد البيع</div>
-            <div className="mt-2 text-3xl font-extrabold text-emerald-800">{formatMoney(profit.revenue ?? profit.salesTotal)}</div>
-            <div className="mt-1 text-xs text-muted">بعد المرتجعات</div>
-          </Card>
-          <Card className="bg-sky-50 border-sky-100">
-            <div className="text-sm text-muted">تكلفة البضاعة المباعة</div>
-            <div className="mt-2 text-3xl font-extrabold text-sky-800">{formatMoney(profit.cogs || 0)}</div>
-            <div className="mt-1 text-xs text-muted">من تكلفة الصنف وقت البيع</div>
-          </Card>
-          <Card className="bg-amber-50 border-amber-100">
-            <div className="text-sm text-muted">مجمل الربح</div>
-            <div className="mt-2 text-3xl font-extrabold text-amber-800">{formatMoney(profit.netProfit ?? profit.grossProfit)}</div>
-            <div className="mt-1 text-xs text-muted">الإيراد ناقص تكلفة البضاعة. فرق الفواتير {formatMoney(profit.grossProfit)}</div>
-          </Card>
-        </div>
+        <ProfitView
+          revenue={profit.revenue ?? profit.salesTotal}
+          cogs={profit.cogs || 0}
+          gross={profit.netProfit ?? profit.grossProfit}
+          invoiceDiff={profit.grossProfit}
+        />
       )}
 
       {tab === 'cash' && cash && (
+        <>
+        <StatGrid cols={3}>
+          <StatCard label="وارد" value={<span className="text-emerald-700">{formatMoney(cash.totalIn)}</span>} icon={ArrowDownLeft} tone="emerald" />
+          <StatCard label="صادر" value={<span className="text-rose-600">{formatMoney(cash.totalOut)}</span>} icon={ArrowUpRight} tone="rose" />
+          <StatCard label="صافي الحركة" value={formatMoney(cash.net)} hint={`${cash.transactions.length} حركة`} icon={Wallet} tone="brand" />
+        </StatGrid>
         <Card>
-          <div className="mb-4 grid gap-3 sm:grid-cols-3">
-            <div className="rounded-xl bg-emerald-50 p-3"><div className="text-xs text-muted">وارد</div><div className="text-xl font-extrabold">{formatMoney(cash.totalIn)}</div></div>
-            <div className="rounded-xl bg-rose-50 p-3"><div className="text-xs text-muted">صادر</div><div className="text-xl font-extrabold">{formatMoney(cash.totalOut)}</div></div>
-            <div className="rounded-xl bg-brand-50 p-3"><div className="text-xs text-muted">صافي</div><div className="text-xl font-extrabold">{formatMoney(cash.net)}</div></div>
-          </div>
           <Table>
             <thead>
               <tr>
@@ -587,16 +637,17 @@ export function ReportsPage() {
             <tbody>
               {cash.transactions.map((t, i) => (
                 <tr key={i} className={t.direction === 'IN' ? 'row-debit' : 'row-credit'}>
-                  <Td>{formatDate(t.createdAt)}</Td>
-                  <Td>{t.account.name}</Td>
-                  <Td>{t.description}</Td>
-                  <Td>{t.direction === 'IN' ? 'وارد' : 'صادر'}</Td>
-                  <Td className="font-bold">{formatMoney(t.amount)}</Td>
+                  <Td className="whitespace-nowrap text-slate-500">{formatDate(t.createdAt)}</Td>
+                  <Td className="font-semibold text-slate-700">{t.account.name}</Td>
+                  <Td className="text-slate-600">{t.description}</Td>
+                  <Td><Badge tone={t.direction === 'IN' ? 'emerald' : 'rose'}>{t.direction === 'IN' ? 'وارد' : 'صادر'}</Badge></Td>
+                  <Td className={`whitespace-nowrap font-extrabold ${t.direction === 'IN' ? 'text-emerald-700' : 'text-rose-600'}`}>{formatMoney(t.amount)}</Td>
                 </tr>
               ))}
             </tbody>
           </Table>
         </Card>
+        </>
       )}
     </div>
   );

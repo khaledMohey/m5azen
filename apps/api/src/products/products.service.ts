@@ -1,6 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { FieldType } from '@prisma/client';
+import { existsSync, unlinkSync } from 'fs';
+import { join, resolve } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
+import { rowsFromProductFile } from './product-file';
 
 @Injectable()
 export class ProductsService {
@@ -170,6 +173,78 @@ export class ProductsService {
 
   deleteCategory(id: string) {
     return this.prisma.category.delete({ where: { id } });
+  }
+
+  async importRows(rows: { sku?: string; name?: string; unit?: string; salePrice?: number; minStock?: number; barcode?: string }[]) {
+    const errors: { row: number; message: string }[] = [];
+    let created = 0;
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      const sku = row.sku?.trim() || '';
+      const name = row.name?.trim() || '';
+      if (!sku || !name) {
+        errors.push({ row: index + 1, message: 'الكود والاسم مطلوبان' });
+        continue;
+      }
+      const exists = await this.prisma.product.findUnique({ where: { sku } });
+      if (exists) {
+        errors.push({ row: index + 1, message: `الكود ${sku} موجود مسبقًا` });
+        continue;
+      }
+      try {
+        await this.create({
+          sku,
+          name,
+          unit: row.unit?.trim() || 'قطعة',
+          salePrice: Number(row.salePrice) || 0,
+          minStock: Number(row.minStock) || 0,
+          barcode: row.barcode?.trim() || null,
+        });
+        created += 1;
+      } catch {
+        errors.push({ row: index + 1, message: `تعذر حفظ ${sku}` });
+      }
+    }
+    return { created, failed: errors.length, errors };
+  }
+
+  async importFile(buffer: Buffer, filename: string) {
+    const rows = await rowsFromProductFile(buffer, filename);
+    return this.importRows(rows);
+  }
+
+  private imageDir() {
+    return join(process.cwd(), 'uploads', 'products');
+  }
+
+  async saveImage(id: string, file: { buffer: Buffer; mimetype: string }) {
+    const types: Record<string, string> = {
+      'image/png': '.png',
+      'image/jpeg': '.jpg',
+      'image/webp': '.webp',
+      'image/gif': '.gif',
+    };
+    const ext = types[file.mimetype];
+    if (!ext) throw new BadRequestException('الصورة لازم تكون png أو jpg أو webp');
+    await this.findOne(id);
+    for (const old of ['.png', '.jpg', '.webp', '.gif']) {
+      const previous = join(this.imageDir(), `${id}${old}`);
+      if (existsSync(previous)) unlinkSync(previous);
+    }
+    await this.prisma.fileBlob.deleteMany({ where: { key: { startsWith: `products/${id}.` } } });
+    const imageFile = `${id}${ext}`;
+    await this.prisma.fileBlob.create({ data: { key: `products/${imageFile}`, mimeType: file.mimetype, data: new Uint8Array(file.buffer) } });
+    return this.prisma.product.update({ where: { id }, data: { imageFile } });
+  }
+
+  async image(id: string): Promise<{ data: Buffer; mimeType: string } | { path: string }> {
+    const product = await this.findOne(id);
+    if (!product.imageFile) throw new NotFoundException('لا توجد صورة');
+    const blob = await this.prisma.fileBlob.findUnique({ where: { key: `products/${product.imageFile}` } });
+    if (blob) return { data: Buffer.from(blob.data), mimeType: blob.mimeType };
+    const path = resolve(this.imageDir(), product.imageFile);
+    if (!path.startsWith(resolve(this.imageDir())) || !existsSync(path)) throw new NotFoundException('لا توجد صورة');
+    return { path };
   }
 
   async findByBarcode(code: string) {

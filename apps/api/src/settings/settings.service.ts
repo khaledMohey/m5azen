@@ -34,6 +34,9 @@ export class SettingsService {
   }
 
   async backup() {
+    if (process.env.TURSO_DATABASE_URL) {
+      return { ok: false, message: 'قاعدة البيانات على السحابة (Turso) — النسخ الاحتياطي اليدوي متاح من النسخة المحلية أو من لوحة Turso' };
+    }
     const candidates = [
       join(process.cwd(), 'prisma', 'dev.db'),
       join(process.cwd(), 'apps', 'api', 'prisma', 'dev.db'),

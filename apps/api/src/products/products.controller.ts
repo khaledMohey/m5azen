@@ -1,4 +1,6 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Response } from 'express';
+import { FileInterceptor } from '@nestjs/platform-express';
 import {
   IsArray, IsBoolean, IsEnum, IsInt, IsNumber, IsOptional, IsString, ValidateNested,
 } from 'class-validator';
@@ -65,6 +67,20 @@ class UpdateProductDto {
   fieldValues?: FieldValueDto[];
 }
 
+class ImportRowDto {
+  @IsOptional() @IsString() sku?: string;
+  @IsOptional() @IsString() name?: string;
+  @IsOptional() @IsString() unit?: string;
+  @IsOptional() @IsNumber() salePrice?: number;
+  @IsOptional() @IsNumber() minStock?: number;
+  @IsOptional() @IsString() barcode?: string;
+}
+
+class ImportDto {
+  @IsArray() @ValidateNested({ each: true }) @Type(() => ImportRowDto)
+  rows!: ImportRowDto[];
+}
+
 @Controller('products')
 export class ProductsController {
   constructor(private service: ProductsService) {}
@@ -119,9 +135,40 @@ export class ProductsController {
     return this.service.findAll(search);
   }
 
+  @Get(':id/image')
+  async image(@Param('id') id: string, @Res() res: Response) {
+    const image = await this.service.image(id);
+    if ('path' in image) return res.sendFile(image.path);
+    res.setHeader('Content-Type', image.mimeType);
+    res.setHeader('Cache-Control', 'no-cache');
+    res.send(image.data);
+  }
+
+  @Post(':id/image')
+  @Roles(Role.ADMIN, Role.WAREHOUSE)
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 2 * 1024 * 1024 } }))
+  uploadImage(@Param('id') id: string, @UploadedFile() file?: { buffer?: Buffer; mimetype?: string }) {
+    if (!file?.buffer?.length || !file.mimetype) throw new BadRequestException('اختر صورة');
+    return this.service.saveImage(id, { buffer: file.buffer, mimetype: file.mimetype });
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.service.findOne(id);
+  }
+
+  @Post('import')
+  @Roles(Role.ADMIN, Role.WAREHOUSE)
+  importRows(@Body() dto: ImportDto) {
+    return this.service.importRows(dto.rows || []);
+  }
+
+  @Post('import-file')
+  @Roles(Role.ADMIN, Role.WAREHOUSE)
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 8 * 1024 * 1024 } }))
+  importFile(@UploadedFile() file?: { buffer?: Buffer; originalname?: string }) {
+    if (!file?.buffer?.length) throw new BadRequestException('اختر ملفًا');
+    return this.service.importFile(file.buffer, file.originalname || 'products.xlsx');
   }
 
   @Post()

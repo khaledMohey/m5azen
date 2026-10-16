@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  ArrowDownLeft, ArrowUpRight, Plus, Wallet, Banknote, Building2,
+  ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Plus, Wallet, Banknote, Building2,
 } from 'lucide-react';
 import { api, formatDate, formatMoney } from '../lib/api';
+import { dueTone } from '../lib/due';
+import { DueAmount } from '../components/DueAmount';
 import {
-  Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, SearchBox, Select, Table, Td, Th,
+  Badge, Button, Card, CardHeader, Empty, Input, Label, Modal, NumberInput, PageHeader, SearchBox, Select, StatCard, StatGrid, Table, Td, Th,
 } from '../components/ui';
 
 const PAYMENT_METHODS = [
@@ -26,7 +28,7 @@ type Tx = {
 };
 type Party = { id: string; name: string; balance?: number; code?: string };
 type OpenInvoice = {
-  id: string; number: string; total: number; paidAmount: number; remaining: number; status: string;
+  id: string; number: string; total: number; paidAmount: number; remaining: number; status: string; invoiceDate: string;
 };
 type Receipt = {
   id: string; number: string; amount: number; paymentMethod: string; receivedAt: string;
@@ -42,6 +44,20 @@ type Payment = {
 };
 
 type Tab = 'overview' | 'receipts' | 'payments' | 'movements';
+
+function oldestOpen(rows: OpenInvoice[]) {
+  const open = rows.filter((row) => row.remaining > 0.009);
+  const source = open.length ? open : rows;
+  return source.reduce((best, row) => (row.invoiceDate < best ? row.invoiceDate : best), source[0].invoiceDate);
+}
+
+function dueBox(rows: OpenInvoice[]) {
+  const tones = rows.filter((row) => row.remaining > 0.009).map((row) => dueTone(row.invoiceDate, row.remaining));
+  if (tones.includes('red')) return 'border-rose-200 bg-rose-50';
+  if (tones.includes('yellow')) return 'border-amber-200 bg-amber-50';
+  if (tones.includes('green')) return 'border-emerald-200 bg-emerald-50';
+  return 'border-slate-200 bg-slate-50';
+}
 
 export function CashPage() {
   const [tab, setTab] = useState<Tab>('overview');
@@ -204,11 +220,17 @@ export function CashPage() {
   const cashAccounts = useMemo(() => accounts.filter((a) => (a.accountType || 'CASH') === 'CASH'), [accounts]);
   const bankAccounts = useMemo(() => accounts.filter((a) => a.accountType === 'BANK'), [accounts]);
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: 'overview', label: 'الحسابات' },
-    { id: 'receipts', label: 'التحصيلات' },
-    { id: 'payments', label: 'السدادات' },
-    { id: 'movements', label: 'الحركات' },
+  const cashTotal = cashAccounts.reduce((s, a) => s + a.balance, 0);
+  const bankTotal = bankAccounts.reduce((s, a) => s + a.balance, 0);
+  const inflow = txs.filter((t) => t.direction === 'IN').reduce((s, t) => s + t.amount, 0);
+  const outflow = txs.filter((t) => t.direction !== 'IN').reduce((s, t) => s + t.amount, 0);
+  const netFlow = inflow - outflow;
+
+  const tabs: { id: Tab; label: string; count?: number }[] = [
+    { id: 'overview', label: 'الحسابات', count: accounts.length },
+    { id: 'receipts', label: 'التحصيلات', count: receipts.length },
+    { id: 'payments', label: 'السدادات', count: payments.length },
+    { id: 'movements', label: 'الحركات', count: txs.length },
   ];
 
   return (
@@ -227,77 +249,51 @@ export function CashPage() {
         }
       />
 
-      <div className="mb-4 flex flex-wrap gap-2 no-print">
+      <StatGrid>
+        <StatCard label="إجمالي الأرصدة" value={formatMoney(total)} hint={`${accounts.length} حساب نشط`} icon={Wallet} tone="brand" />
+        <StatCard label="النقدية بالخزن" value={formatMoney(cashTotal)} hint={`${cashAccounts.length} خزنة`} icon={Banknote} tone="emerald" />
+        <StatCard label="أرصدة البنوك" value={formatMoney(bankTotal)} hint={`${bankAccounts.length} حساب بنكي`} icon={Building2} tone="sky" />
+        <StatCard label="صافي الحركة المسجلة" value={formatMoney(netFlow)} hint={`وارد ${formatMoney(inflow)} · صادر ${formatMoney(outflow)}`} icon={ArrowLeftRight} tone={netFlow >= 0 ? 'emerald' : 'rose'} />
+      </StatGrid>
+
+      <div className="mb-4 flex w-fit max-w-full flex-wrap rounded-xl border border-slate-200 bg-white p-1 shadow-sm no-print">
         {tabs.map((t) => (
-          <Button key={t.id} variant={tab === t.id ? 'primary' : 'secondary'} onClick={() => setTab(t.id)}>
+          <button key={t.id} type="button" onClick={() => setTab(t.id)} className={`inline-flex h-9 items-center gap-2 rounded-lg px-4 text-[13px] font-bold transition ${tab === t.id ? 'bg-brand-700 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
             {t.label}
-          </Button>
+            {t.count !== undefined && <span className={`rounded-md px-1.5 text-[11px] tabular-nums ${tab === t.id ? 'bg-white/20' : 'bg-slate-100'}`}>{t.count}</span>}
+          </button>
         ))}
       </div>
 
       {tab === 'overview' && (
-        <>
-          <div className="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Card className="border-0 bg-gradient-to-br from-brand-700 to-brand-900 text-white">
-              <div className="flex items-center gap-2 text-sm text-brand-100"><Wallet size={16} /> إجمالي الأرصدة</div>
-              <div className="mt-2 text-3xl font-extrabold">{formatMoney(total)}</div>
-            </Card>
-            <Card>
-              <div className="flex items-center gap-2 text-sm text-muted"><Banknote size={16} /> نقدي</div>
-              <div className="mt-2 text-2xl font-extrabold">
-                {formatMoney(cashAccounts.reduce((s, a) => s + a.balance, 0))}
-              </div>
-            </Card>
-            <Card>
-              <div className="flex items-center gap-2 text-sm text-muted"><Building2 size={16} /> بنوك</div>
-              <div className="mt-2 text-2xl font-extrabold">
-                {formatMoney(bankAccounts.reduce((s, a) => s + a.balance, 0))}
-              </div>
-            </Card>
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Card>
-              <div className="mb-3 font-bold">الخزن النقدية</div>
-              {cashAccounts.length === 0 ? <Empty text="لا توجد خزن نقدية" /> : (
-                <Table>
-                  <thead><tr><Th>الكود</Th><Th>الاسم</Th><Th>الرصيد</Th></tr></thead>
-                  <tbody>
-                    {cashAccounts.map((a) => (
-                      <tr key={a.id} className="row-debit">
-                        <Td className="font-mono text-xs">{a.code}</Td>
-                        <Td>{a.name}</Td>
-                        <Td className="font-bold">{formatMoney(a.balance)}</Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </Table>
+        <div className="grid gap-4 lg:grid-cols-2">
+          {([['الخزن النقدية', cashAccounts, Banknote, 'from-emerald-500 to-teal-800'], ['الحسابات البنكية', bankAccounts, Building2, 'from-brand-600 to-brand-950']] as const).map(([title, list, Icon, gradient]) => (
+            <Card key={title}>
+              <CardHeader title={title} subtitle={`الإجمالي ${formatMoney(list.reduce((s, a) => s + a.balance, 0))}`} icon={Icon} />
+              {list.length === 0 ? <Empty text={`لا توجد ${title}`} /> : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {list.map((a) => (
+                    <div key={a.id} className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${gradient} p-4 text-white shadow-lg`}>
+                      <div className="pointer-events-none absolute -left-6 -top-8 h-24 w-24 rounded-full bg-white/10" />
+                      <div className="pointer-events-none absolute -bottom-10 left-12 h-24 w-24 rounded-full bg-white/5" />
+                      <div className="relative flex items-center justify-between text-xs text-white/80">
+                        <span className="flex items-center gap-1.5 font-semibold"><Icon size={14} />{a.name}</span>
+                        <span className="font-mono tracking-widest" dir="ltr">{a.code}</span>
+                      </div>
+                      <div className="relative mt-5 text-[1.35rem] font-black tracking-tight tabular-nums">{formatMoney(a.balance)}</div>
+                      <div className="relative mt-1 text-[11px] text-white/70">{total > 0 ? `${((a.balance / total) * 100).toFixed(1)}% من إجمالي الأرصدة` : '—'}</div>
+                    </div>
+                  ))}
+                </div>
               )}
             </Card>
-            <Card>
-              <div className="mb-3 font-bold">الحسابات البنكية</div>
-              {bankAccounts.length === 0 ? <Empty text="لا توجد حسابات بنكية" /> : (
-                <Table>
-                  <thead><tr><Th>الكود</Th><Th>الاسم</Th><Th>الرصيد</Th></tr></thead>
-                  <tbody>
-                    {bankAccounts.map((a) => (
-                      <tr key={a.id} className="row-debit">
-                        <Td className="font-mono text-xs">{a.code}</Td>
-                        <Td>{a.name}</Td>
-                        <Td className="font-bold">{formatMoney(a.balance)}</Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </Table>
-              )}
-            </Card>
-          </div>
-        </>
+          ))}
+        </div>
       )}
 
       {tab === 'receipts' && (
         <Card>
-          <div className="mb-3 font-bold">سجل التحصيلات من العملاء</div>
+          <CardHeader title="سجل التحصيلات من العملاء" subtitle={`${filteredReceipts.length} عملية · ${formatMoney(filteredReceipts.reduce((s, r) => s + r.amount, 0))}`} icon={ArrowDownLeft} />
           {receipts.length === 0 ? <Empty /> : (
             <Table>
               <thead>
@@ -309,13 +305,13 @@ export function CashPage() {
               <tbody>
                 {filteredReceipts.map((r) => (
                   <tr key={r.id} className="row-debit">
-                    <Td className="font-semibold">{r.number}</Td>
-                    <Td>{r.customer.name}</Td>
-                    <Td>{r.salesInvoice?.number || '—'}</Td>
-                    <Td>{r.cashAccount.name}</Td>
-                    <Td>{METHOD_MAP[r.paymentMethod] || r.paymentMethod}</Td>
-                    <Td className="font-bold">{formatMoney(r.amount)}</Td>
-                    <Td>{formatDate(r.receivedAt)}</Td>
+                    <Td><span className="font-mono text-xs font-bold text-brand-700" dir="ltr">{r.number}</span></Td>
+                    <Td className="font-bold text-slate-900">{r.customer.name}</Td>
+                    <Td><span className="font-mono text-xs text-slate-500" dir="ltr">{r.salesInvoice?.number || '—'}</span></Td>
+                    <Td className="text-slate-600">{r.cashAccount.name}</Td>
+                    <Td><Badge tone="sky">{METHOD_MAP[r.paymentMethod] || r.paymentMethod}</Badge></Td>
+                    <Td className="whitespace-nowrap font-extrabold text-emerald-700">+ {formatMoney(r.amount)}</Td>
+                    <Td className="whitespace-nowrap text-slate-500">{formatDate(r.receivedAt)}</Td>
                   </tr>
                 ))}
               </tbody>
@@ -326,7 +322,7 @@ export function CashPage() {
 
       {tab === 'payments' && (
         <Card>
-          <div className="mb-3 font-bold">سجل السداد للموردين</div>
+          <CardHeader title="سجل السداد للموردين" subtitle={`${filteredPayments.length} عملية · ${formatMoney(filteredPayments.reduce((s, p) => s + p.amount, 0))}`} icon={ArrowUpRight} />
           {payments.length === 0 ? <Empty /> : (
             <Table>
               <thead>
@@ -338,13 +334,13 @@ export function CashPage() {
               <tbody>
                 {filteredPayments.map((p) => (
                   <tr key={p.id} className="row-credit">
-                    <Td className="font-semibold">{p.number}</Td>
-                    <Td>{p.supplier.name}</Td>
-                    <Td>{p.purchaseInvoice?.number || '—'}</Td>
-                    <Td>{p.cashAccount.name}</Td>
-                    <Td>{METHOD_MAP[p.paymentMethod] || p.paymentMethod}</Td>
-                    <Td className="font-bold">{formatMoney(p.amount)}</Td>
-                    <Td>{formatDate(p.paidAt)}</Td>
+                    <Td><span className="font-mono text-xs font-bold text-brand-700" dir="ltr">{p.number}</span></Td>
+                    <Td className="font-bold text-slate-900">{p.supplier.name}</Td>
+                    <Td><span className="font-mono text-xs text-slate-500" dir="ltr">{p.purchaseInvoice?.number || '—'}</span></Td>
+                    <Td className="text-slate-600">{p.cashAccount.name}</Td>
+                    <Td><Badge tone="sky">{METHOD_MAP[p.paymentMethod] || p.paymentMethod}</Badge></Td>
+                    <Td className="whitespace-nowrap font-extrabold text-rose-600">− {formatMoney(p.amount)}</Td>
+                    <Td className="whitespace-nowrap text-slate-500">{formatDate(p.paidAt)}</Td>
                   </tr>
                 ))}
               </tbody>
@@ -355,7 +351,7 @@ export function CashPage() {
 
       {tab === 'movements' && (
         <Card>
-          <div className="mb-3 font-bold">كل حركات الخزنة</div>
+          <CardHeader title="كل حركات الخزنة" subtitle={`${filteredTxs.length} حركة`} icon={ArrowLeftRight} />
           {txs.length === 0 ? <Empty /> : (
             <Table>
               <thead>
@@ -366,12 +362,12 @@ export function CashPage() {
               <tbody>
                 {filteredTxs.map((t) => (
                   <tr key={t.id} className={t.direction === 'IN' ? 'row-debit' : 'row-credit'}>
-                    <Td>{formatDate(t.createdAt)}</Td>
-                    <Td>{t.account.name}</Td>
-                    <Td>{t.description}</Td>
-                    <Td>{METHOD_MAP[t.paymentMethod || ''] || '—'}</Td>
-                    <Td>{t.direction === 'IN' ? 'وارد' : 'صادر'}</Td>
-                    <Td className="font-bold">{formatMoney(t.amount)}</Td>
+                    <Td className="whitespace-nowrap text-slate-500">{formatDate(t.createdAt)}</Td>
+                    <Td className="font-semibold text-slate-700">{t.account.name}</Td>
+                    <Td className="max-w-md truncate text-slate-600" >{t.description}</Td>
+                    <Td className="text-muted">{METHOD_MAP[t.paymentMethod || ''] || '—'}</Td>
+                    <Td><Badge tone={t.direction === 'IN' ? 'emerald' : 'rose'}>{t.direction === 'IN' ? 'وارد' : 'صادر'}</Badge></Td>
+                    <Td className={`whitespace-nowrap font-extrabold ${t.direction === 'IN' ? 'text-emerald-700' : 'text-rose-600'}`}>{t.direction === 'IN' ? '+' : '−'} {formatMoney(t.amount)}</Td>
                   </tr>
                 ))}
               </tbody>
@@ -394,13 +390,20 @@ export function CashPage() {
           </div>
 
           {customerSummary && (
-            <div className="rounded-xl border border-brand-200 bg-brand-50 px-4 py-3 text-sm">
-              <div className="font-bold text-brand-800">
-                المستحق على العميل: {formatMoney(customerSummary.balance)}
+            <div className={`rounded-xl border px-4 py-3 text-sm ${dueBox(customerSummary.openInvoices)}`}>
+              <div className="font-bold">
+                المستحق على العميل: {customerSummary.openInvoices.length > 0
+                  ? <DueAmount date={oldestOpen(customerSummary.openInvoices)} remaining={customerSummary.balance} />
+                  : formatMoney(customerSummary.balance)}
               </div>
-              {customerSummary.openInvoices.length > 0 && (
-                <div className="mt-2 text-xs text-muted">
-                  فواتير مفتوحة: {customerSummary.openInvoices.length}
+              {customerSummary.openInvoices.filter((row) => row.remaining > 0.009).length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {customerSummary.openInvoices.filter((row) => row.remaining > 0.009).map((row) => (
+                    <div key={row.id} className="flex items-center justify-between gap-2 text-xs">
+                      <span>{row.number}</span>
+                      <DueAmount date={row.invoiceDate} remaining={row.remaining} />
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -471,13 +474,20 @@ export function CashPage() {
           </div>
 
           {supplierSummary && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm">
-              <div className="font-bold text-amber-900">
-                المستحق للمورد: {formatMoney(supplierSummary.balance)}
+            <div className={`rounded-xl border px-4 py-3 text-sm ${dueBox(supplierSummary.openInvoices)}`}>
+              <div className="font-bold">
+                المستحق للمورد: {supplierSummary.openInvoices.length > 0
+                  ? <DueAmount date={oldestOpen(supplierSummary.openInvoices)} remaining={supplierSummary.balance} />
+                  : formatMoney(supplierSummary.balance)}
               </div>
-              {supplierSummary.openInvoices.length > 0 && (
-                <div className="mt-2 text-xs text-muted">
-                  فواتير مفتوحة: {supplierSummary.openInvoices.length}
+              {supplierSummary.openInvoices.filter((row) => row.remaining > 0.009).length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {supplierSummary.openInvoices.filter((row) => row.remaining > 0.009).map((row) => (
+                    <div key={row.id} className="flex items-center justify-between gap-2 text-xs">
+                      <span>{row.number}</span>
+                      <DueAmount date={row.invoiceDate} remaining={row.remaining} />
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

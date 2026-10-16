@@ -1,46 +1,150 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FileText, Plus, Printer } from 'lucide-react';
-import { api, formatDate, formatMoney } from '../lib/api';
+import { ArrowDownCircle, ArrowUpCircle, FileText, Hash, MapPin, Pencil, Phone, Plus, Printer, Truck, Wallet } from 'lucide-react';
+import ExcelJS from 'exceljs';
+import { api, formatDate, formatMoney, initialQuery } from '../lib/api';
+import { urgentInvoiceDate } from '../lib/due';
+import { DueAmount } from '../components/DueAmount';
+import { usePagedList } from '../lib/paging';
+import { useColumns } from '../lib/columns';
+import { useToast } from '../lib/feedback';
+import { FilterOption, IconAction, ListBar } from '../components/ListBar';
 import {
-  Button, Card, Empty, Input, Label, Modal, PageHeader, PrintHeader, SearchBox, Table, Td, Th,
+  Badge, Button, Card, Empty, Field, Input, Modal, PageHeader, Pager, PrintHeader, StatCard, StatGrid, Table, Td, Th,
 } from '../components/ui';
 
 type Supplier = {
-  id: string; code: string; name: string; phone?: string | null; balance: number; address?: string | null;
+  id: string;
+  code: string;
+  name: string;
+  phone?: string | null;
+  address?: string | null;
+  balance: number;
+  isActive?: boolean;
 };
 
 type StatementRow = {
-  date: string; type: string; ref: string; debit: number; credit: number; balance: number;
-  method?: string | null; note?: string | null;
+  date: string;
+  type: string;
+  ref: string;
+  debit: number;
+  credit: number;
+  balance: number;
+  method?: string | null;
+  note?: string | null;
 };
 
+type SupplierForm = { code: string; name: string; phone: string; address: string; isActive: boolean };
+
+const emptySupplier: SupplierForm = { code: '', name: '', phone: '', address: '', isActive: true };
+const SUPPLIER_VIEW = 'm5azen.suppliersView';
+
 export function SuppliersPage() {
+  const toast = useToast();
   const [items, setItems] = useState<Supplier[]>([]);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialQuery);
+  const [listView, setListView] = useState<'all' | 'debit' | 'credit'>('all');
+  const [view, setView] = useState<'table' | 'cards'>(() => (localStorage.getItem(SUPPLIER_VIEW) === 'cards' ? 'cards' : 'table'));
   const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [stmtOpen, setStmtOpen] = useState(false);
   const [statement, setStatement] = useState<{ supplier: Supplier; statement: StatementRow[]; balance: number } | null>(null);
-  const [form, setForm] = useState({ code: '', name: '', phone: '', address: '' });
+  const [form, setForm] = useState<SupplierForm>(emptySupplier);
+  const [dueDates, setDueDates] = useState<Record<string, string>>({});
+  const columns = useColumns('m5azen.cols.suppliers', [
+    { id: 'balance', label: 'الرصيد' },
+    { id: 'phone', label: 'الهاتف' },
+    { id: 'address', label: 'العنوان' },
+    { id: 'name', label: 'الاسم' },
+    { id: 'code', label: 'الكود' },
+  ]);
 
   async function load() {
-    setItems(await api<Supplier[]>('/suppliers'));
+    const suppliers = await api<Supplier[]>('/suppliers');
+    setItems(suppliers);
+    const purchases = await api<{ status: string; invoiceDate: string; total: number; paidAmount: number; supplier: { id: string } }[]>('/purchases').catch(() => []);
+    const grouped = new Map<string, { invoiceDate: string; remaining: number }[]>();
+    for (const inv of purchases) {
+      if (inv.status === 'CANCELLED' || inv.status === 'DRAFT') continue;
+      const rows = grouped.get(inv.supplier.id) || [];
+      rows.push({ invoiceDate: inv.invoiceDate, remaining: inv.total - inv.paidAmount });
+      grouped.set(inv.supplier.id, rows);
+    }
+    const dates: Record<string, string> = {};
+    grouped.forEach((rows, id) => {
+      const date = urgentInvoiceDate(rows);
+      if (date) dates[id] = date;
+    });
+    setDueDates(dates);
   }
 
-  useEffect(() => { load(); }, []);
+  function supplierBalance(row: Supplier) {
+    const date = dueDates[row.id];
+    if (row.balance > 0.009 && date) return <DueAmount date={date} remaining={row.balance} />;
+    return <span className="font-extrabold">{formatMoney(row.balance)}</span>;
+  }
+
+  useEffect(() => { load().catch((error) => toast.error(error instanceof Error ? error.message : 'تعذر تحميل الموردين')); }, []);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter((s) =>
-      [s.code, s.name, s.phone || '', s.address || ''].some((x) => x.toLowerCase().includes(q)),
-    );
-  }, [items, search]);
+    return items.filter((row) => {
+      if (listView === 'debit' && !(row.balance > 0)) return false;
+      if (listView === 'credit' && !(row.balance < 0)) return false;
+      if (!q) return true;
+      return [row.code, row.name, row.phone || '', row.address || ''].some((value) => value.toLowerCase().includes(q));
+    });
+  }, [items, search, listView]);
+
+  const pager = usePagedList(filtered, `${search}:${listView}`);
+  const formErrors = {
+    code: !form.code.trim() ? 'كود المورد مطلوب' : items.some((row) => row.id !== editingId && row.code.toLowerCase() === form.code.trim().toLowerCase()) ? 'الكود مستخدم لمورد آخر' : '',
+    name: form.name.trim().length < 2 ? 'اسم المورد حرفين على الأقل' : '',
+  };
+  const debitCount = items.filter((row) => row.balance > 0).length;
+  const creditCount = items.filter((row) => row.balance < 0).length;
+
+  function openCreate() {
+    setEditingId(null);
+    setForm(emptySupplier);
+    setOpen(true);
+  }
+
+  function openEdit(row: Supplier) {
+    setEditingId(row.id);
+    setForm({
+      code: row.code,
+      name: row.name,
+      phone: row.phone || '',
+      address: row.address || '',
+      isActive: row.isActive !== false,
+    });
+    setOpen(true);
+  }
 
   async function save() {
-    await api('/suppliers', { method: 'POST', body: JSON.stringify(form) });
-    setOpen(false);
-    setForm({ code: '', name: '', phone: '', address: '' });
-    load();
+    if (formErrors.code || formErrors.name) return;
+    setSaving(true);
+    try {
+      const body = {
+        code: form.code.trim(),
+        name: form.name.trim(),
+        phone: form.phone.trim(),
+        address: form.address.trim(),
+        ...(editingId ? { isActive: form.isActive } : {}),
+      };
+      await api(editingId ? `/suppliers/${editingId}` : '/suppliers', {
+        method: editingId ? 'PATCH' : 'POST',
+        body: JSON.stringify(body),
+      });
+      toast.success(editingId ? 'تم تعديل المورد' : 'تم إضافة المورد');
+      setOpen(false);
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'تعذر حفظ المورد');
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function showStatement(id: string) {
@@ -49,56 +153,150 @@ export function SuppliersPage() {
     setStmtOpen(true);
   }
 
+  async function exportRows() {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('الموردين');
+    sheet.addRow(['الكود', 'الاسم', 'الهاتف', 'العنوان', 'الرصيد', 'الحالة']);
+    filtered.forEach((row) => sheet.addRow([row.code, row.name, row.phone || '', row.address || '', row.balance, row.isActive === false ? 'موقوف' : 'نشط']));
+    const buffer = await workbook.xlsx.writeBuffer();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([buffer]));
+    link.download = 'suppliers.xlsx';
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
   return (
     <div>
       <PageHeader
         title="الموردين"
         subtitle="بيانات الموردين وكشوف الحساب"
-        actions={
-          <>
-            <SearchBox value={search} onChange={setSearch} placeholder="بحث مورد..." />
-            <Button onClick={() => setOpen(true)}><Plus size={16} /> مورد جديد</Button>
-          </>
-        }
+        actions={<Button onClick={openCreate}><Plus size={16} /> مورد جديد</Button>}
       />
+
+      <StatGrid>
+        <StatCard label="إجمالي الموردين" value={items.length} hint={`${items.filter((row) => row.isActive !== false).length} مورد نشط`} icon={Truck} tone="brand" active={listView === 'all'} onClick={() => setListView('all')} />
+        <StatCard label="مستحقات للموردين" value={formatMoney(items.reduce((sum, row) => sum + Math.max(0, row.balance), 0))} hint="إجمالي المطلوب سداده" icon={Wallet} tone="rose" />
+        <StatCard label="رصيد مدين" value={debitCount} hint="موردين لهم مبالغ" icon={ArrowUpCircle} tone="amber" active={listView === 'debit'} onClick={() => setListView('debit')} />
+        <StatCard label="رصيد دائن" value={creditCount} hint="موردين دفعنا لهم مقدماً" icon={ArrowDownCircle} tone="emerald" active={listView === 'credit'} onClick={() => setListView('credit')} />
+      </StatGrid>
+
       <Card>
-        {filtered.length === 0 ? <Empty /> : (
-          <Table>
-            <thead>
-              <tr>
-                <Th>الكود</Th>
-                <Th>الاسم</Th>
-                <Th>الهاتف</Th>
-                <Th>الرصيد</Th>
-                <Th></Th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((s) => (
-                <tr key={s.id} className={s.balance > 0 ? 'row-debit' : s.balance < 0 ? 'row-credit' : ''}>
-                  <Td>{s.code}</Td>
-                  <Td className="font-semibold">{s.name}</Td>
-                  <Td>{s.phone || '—'}</Td>
-                  <Td className="font-bold">{formatMoney(s.balance)}</Td>
-                  <Td>
-                    <Button variant="ghost" onClick={() => showStatement(s.id)}>
-                      <FileText size={14} /> كشف حساب
-                    </Button>
-                  </Td>
-                </tr>
+        <ListBar
+          search={search}
+          onSearch={setSearch}
+          placeholder="بحث بالكود أو الاسم أو الهاتف"
+          view={view}
+          onView={(mode) => { setView(mode); localStorage.setItem(SUPPLIER_VIEW, mode); }}
+          onExport={exportRows}
+          columns={columns.columns}
+          onToggleColumn={columns.toggle}
+          filterActive={listView !== 'all'}
+          filter={(
+            <div className="space-y-1">
+              <div className="mb-2 text-xs font-bold text-muted">تصفية الموردين</div>
+              {([['all', 'الكل'], ['debit', 'رصيد مدين'], ['credit', 'رصيد دائن']] as const).map(([key, label]) => (
+                <FilterOption key={key} active={listView === key} onClick={() => setListView(key)}>{label}</FilterOption>
               ))}
-            </tbody>
-          </Table>
+            </div>
+          )}
+        />
+        {filtered.length === 0 ? <Empty text="لا يوجد موردين مطابقون" hint="غيّر البحث أو التصفية" /> : view === 'cards' ? (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {pager.slice.map((row) => (
+                <div key={row.id} className="lift rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-sky-500 to-brand-700 text-white"><Truck size={18} /></span>
+                      <div className="min-w-0">
+                        <div className="truncate text-base font-extrabold">{row.name}</div>
+                        <div className="font-mono text-xs font-bold text-brand-700" dir="ltr">{row.code}</div>
+                      </div>
+                    </div>
+                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ${row.isActive === false ? 'bg-slate-200 text-slate-600' : 'bg-emerald-50 text-emerald-700'}`}>{row.isActive === false ? 'موقوف' : 'نشط'}</span>
+                  </div>
+                  <div className="mt-3 flex items-center gap-1.5 text-sm text-muted"><Phone size={13} /><bdi dir="ltr">{row.phone || 'بدون هاتف'}</bdi></div>
+                  <div className="mt-4 flex items-end justify-between border-t border-slate-100 pt-3">
+                    <div>
+                      <div className="text-xs text-muted">الرصيد</div>
+                      {supplierBalance(row)}
+                    </div>
+                    <div className="flex gap-1">
+                      <IconAction label="تعديل" onClick={() => openEdit(row)}><Pencil size={14} /></IconAction>
+                      <IconAction label="كشف حساب" onClick={() => showStatement(row.id)}><FileText size={14} /></IconAction>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+          </>
+        ) : (
+          <>
+            <Table>
+              <thead>
+                <tr>
+                  {columns.visible('balance') && <Th>الرصيد</Th>}
+                  {columns.visible('phone') && <Th>الهاتف</Th>}
+                  {columns.visible('address') && <Th>العنوان</Th>}
+                  {columns.visible('name') && <Th>الاسم</Th>}
+                  {columns.visible('code') && <Th>الكود</Th>}
+                  <Th>الإجراءات</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {pager.slice.map((row) => (
+                  <tr key={row.id} className={row.balance > 0 ? 'row-debit' : row.balance < 0 ? 'row-credit' : ''}>
+                    {columns.visible('balance') && <Td>{supplierBalance(row)}</Td>}
+                    {columns.visible('phone') && <Td><bdi dir="ltr" className="font-medium text-slate-600">{row.phone || '—'}</bdi></Td>}
+                    {columns.visible('address') && <Td className="max-w-xs truncate text-muted">{row.address || '—'}</Td>}
+                    {columns.visible('name') && (
+                      <Td>
+                        <div className="flex items-center gap-2.5">
+                          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-sky-50 text-sky-700"><Truck size={15} /></span>
+                          <span className="truncate font-bold text-slate-800">{row.name}</span>
+                          {row.isActive === false && <Badge tone="slate">موقوف</Badge>}
+                        </div>
+                      </Td>
+                    )}
+                    {columns.visible('code') && <Td><span className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-xs font-bold text-slate-700" dir="ltr">{row.code}</span></Td>}
+                    <Td>
+                      <div className="flex gap-1">
+                        <IconAction label="تعديل" onClick={() => openEdit(row)}><Pencil size={14} /></IconAction>
+                        <IconAction label="كشف حساب" onClick={() => showStatement(row.id)}><FileText size={14} /></IconAction>
+                      </div>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+            <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+          </>
         )}
       </Card>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="مورد جديد">
+      <Modal open={open} onClose={() => setOpen(false)} title={editingId ? 'تعديل مورد' : 'مورد جديد'}>
         <div className="space-y-3">
-          <div><Label>كود المورد</Label><Input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} /></div>
-          <div><Label>اسم المورد</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
-          <div><Label>رقم الهاتف</Label><Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
-          <div><Label>العنوان</Label><Input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></div>
-          <Button className="w-full" onClick={save}>حفظ</Button>
+          <Field label="كود المورد" icon={<Hash size={16} />} error={formErrors.code}>
+            <Input value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} />
+          </Field>
+          <Field label="اسم المورد" icon={<Truck size={16} />} error={formErrors.name}>
+            <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+          </Field>
+          <Field label="رقم الهاتف" icon={<Phone size={16} />}>
+            <Input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
+          </Field>
+          <Field label="العنوان" icon={<MapPin size={16} />}>
+            <Input value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} />
+          </Field>
+          {editingId && (
+            <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+              <input type="checkbox" checked={form.isActive} onChange={(event) => setForm({ ...form, isActive: event.target.checked })} />
+              المورد نشط
+            </label>
+          )}
+          <Button className="w-full" disabled={saving || !!formErrors.code || !!formErrors.name} onClick={save}>{editingId ? 'حفظ التعديلات' : 'حفظ المورد'}</Button>
         </div>
       </Modal>
 
@@ -106,8 +304,19 @@ export function SuppliersPage() {
         {statement && (
           <div>
             <PrintHeader title={`كشف حساب مورد: ${statement.supplier.name}`} subtitle={`الرصيد الحالي: ${formatMoney(statement.balance)}`} />
-            <div className="mb-3 text-sm font-semibold text-brand-800">
-              الرصيد الحالي: {formatMoney(statement.balance)}
+            <div className="mb-4 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="text-xs text-muted">إجمالي المدين</div>
+                <div className="mt-1 text-lg font-extrabold tabular-nums text-slate-900">{formatMoney(statement.statement.reduce((s, r) => s + r.debit, 0))}</div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="text-xs text-muted">إجمالي الدائن</div>
+                <div className="mt-1 text-lg font-extrabold tabular-nums text-slate-900">{formatMoney(statement.statement.reduce((s, r) => s + r.credit, 0))}</div>
+              </div>
+              <div className="rounded-xl bg-gradient-to-br from-brand-700 to-brand-900 p-3 text-white">
+                <div className="text-xs text-white/75">الرصيد الحالي</div>
+                <div className="mt-1 text-lg font-extrabold tabular-nums">{formatMoney(statement.balance)}</div>
+              </div>
             </div>
             <div className="mb-4 flex justify-end no-print">
               <Button variant="secondary" onClick={() => window.print()}><Printer size={14} /> طباعة / PDF</Button>
@@ -125,15 +334,15 @@ export function SuppliersPage() {
                 </tr>
               </thead>
               <tbody>
-                {statement.statement.map((r, i) => (
-                  <tr key={i} className={r.debit > 0 ? 'row-debit' : r.credit > 0 ? 'row-credit' : ''}>
-                    <Td>{formatDate(r.date)}</Td>
-                    <Td>{r.type}</Td>
-                    <Td>{r.ref}</Td>
-                    <Td>{r.method || '—'}</Td>
-                    <Td>{r.debit ? formatMoney(r.debit) : '—'}</Td>
-                    <Td>{r.credit ? formatMoney(r.credit) : '—'}</Td>
-                    <Td className="font-bold">{formatMoney(r.balance)}</Td>
+                {statement.statement.map((row, index) => (
+                  <tr key={index} className={row.debit > 0 ? 'row-debit' : row.credit > 0 ? 'row-credit' : ''}>
+                    <Td className="whitespace-nowrap text-slate-600">{formatDate(row.date)}</Td>
+                    <Td className="font-semibold">{row.type}</Td>
+                    <Td><span className="font-mono text-xs font-bold text-brand-700" dir="ltr">{row.ref}</span></Td>
+                    <Td className="text-muted">{row.method || '—'}</Td>
+                    <Td className="font-semibold text-emerald-700">{row.debit ? formatMoney(row.debit) : '—'}</Td>
+                    <Td className="font-semibold text-rose-700">{row.credit ? formatMoney(row.credit) : '—'}</Td>
+                    <Td className="font-extrabold text-slate-900">{formatMoney(row.balance)}</Td>
                   </tr>
                 ))}
               </tbody>

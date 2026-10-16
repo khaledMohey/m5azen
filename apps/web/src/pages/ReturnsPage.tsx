@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus } from 'lucide-react';
+import { CalendarDays, Eye, PackageOpen, Plus, Redo2, Undo2 } from 'lucide-react';
 import { api, formatDate, formatMoney } from '../lib/api';
+import { useToast } from '../lib/feedback';
 import {
-  Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, SearchBox, Select, Table, Td, Th,
+  Badge, Button, Card, CardHeader, Empty, Input, Label, Modal, NumberInput, PageHeader, SearchBox, Select, StatCard, StatGrid, Table, Td, Th,
 } from '../components/ui';
+
+function isThisMonth(date: string) {
+  const d = new Date(date);
+  const now = new Date();
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+}
 
 type Party = { id: string; name: string };
 
@@ -104,6 +111,8 @@ export function ReturnsPage() {
   const [loadingItems, setLoadingItems] = useState(false);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
+  const [detail, setDetail] = useState<SalesReturn | PurchaseReturn | null>(null);
+  const toast = useToast();
 
   const [salesForm, setSalesForm] = useState({
     customerId: '', warehouseId: '', notes: '',
@@ -299,6 +308,7 @@ export function ReturnsPage() {
         }
       }
       setOpen(false);
+      toast.success(tab === 'sales' ? 'تم حفظ مرتجع البيع' : 'تم حفظ مرتجع الشراء');
       load();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'فشل حفظ المرتجع');
@@ -320,68 +330,98 @@ export function ReturnsPage() {
         }
       />
 
-      <div className="mb-4 flex gap-2 no-print">
-        <Button variant={tab === 'sales' ? 'primary' : 'secondary'} onClick={() => setTab('sales')}>مرتجعات البيع</Button>
-        <Button variant={tab === 'purchases' ? 'primary' : 'secondary'} onClick={() => setTab('purchases')}>مرتجعات الشراء</Button>
+      <StatGrid>
+        <StatCard label="مرتجعات البيع" value={formatMoney(salesReturns.reduce((s, r) => s + r.total, 0))} hint={`${salesReturns.length} مرتجع من العملاء`} icon={Undo2} tone="rose" onClick={() => setTab('sales')} active={tab === 'sales'} />
+        <StatCard label="مرتجعات الشراء" value={formatMoney(purchaseReturns.reduce((s, r) => s + r.total, 0))} hint={`${purchaseReturns.length} مرتجع للموردين`} icon={Redo2} tone="sky" onClick={() => setTab('purchases')} active={tab === 'purchases'} />
+        <StatCard label="مرتجعات بيع هذا الشهر" value={formatMoney(salesReturns.filter((r) => isThisMonth(r.returnDate)).reduce((s, r) => s + r.total, 0))} hint={`${salesReturns.filter((r) => isThisMonth(r.returnDate)).length} مرتجع`} icon={CalendarDays} tone="amber" />
+        <StatCard label="وحدات مرتجعة" value={[...salesReturns, ...purchaseReturns].reduce((s, r) => s + r.lines.reduce((x, l) => x + l.quantity, 0), 0).toLocaleString('ar-EG')} hint="بيع + شراء" icon={PackageOpen} tone="violet" />
+      </StatGrid>
+
+      <div className="mb-4 flex w-fit rounded-xl border border-slate-200 bg-white p-1 shadow-sm no-print">
+        {([['sales', 'مرتجعات البيع', salesReturns.length], ['purchases', 'مرتجعات الشراء', purchaseReturns.length]] as const).map(([id, label, count]) => (
+          <button key={id} type="button" onClick={() => setTab(id)} className={`inline-flex h-9 items-center gap-2 rounded-lg px-4 text-[13px] font-bold transition ${tab === id ? 'bg-brand-700 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
+            {label}
+            <span className={`rounded-md px-1.5 text-[11px] tabular-nums ${tab === id ? 'bg-white/20' : 'bg-slate-100'}`}>{count}</span>
+          </button>
+        ))}
       </div>
 
       <Card>
-        {tab === 'sales' ? (
-          salesReturns.length === 0 ? <Empty /> : (
-            <Table>
-              <thead>
-                <tr>
-                  <Th>الرقم</Th>
-                  <Th>العميل</Th>
-                  <Th>فاتورة البيع</Th>
-                  <Th>المخزن</Th>
-                  <Th>التاريخ</Th>
-                  <Th>الإجمالي</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredSales.map((r) => (
-                  <tr key={r.id} className="row-credit">
-                    <Td className="font-semibold">{r.number}</Td>
-                    <Td>{r.customer.name}</Td>
-                    <Td>{r.salesInvoice?.number || '—'}</Td>
-                    <Td>{r.warehouse.name}</Td>
-                    <Td>{formatDate(r.returnDate)}</Td>
-                    <Td className="font-bold">{formatMoney(r.total)}</Td>
-                  </tr>
-                ))}
-              </tbody>
-            </Table>
-          )
+        <CardHeader
+          title={tab === 'sales' ? 'سجل مرتجعات البيع' : 'سجل مرتجعات الشراء'}
+          subtitle={`${tab === 'sales' ? filteredSales.length : filteredPurchases.length} مرتجع`}
+          icon={tab === 'sales' ? Undo2 : Redo2}
+        />
+        {(tab === 'sales' ? filteredSales.length : filteredPurchases.length) === 0 ? (
+          <Empty
+            text={(tab === 'sales' ? salesReturns.length : purchaseReturns.length) ? 'لا توجد نتائج مطابقة' : 'لا توجد مرتجعات بعد'}
+            action={<Button onClick={openModal}><Plus size={16} /> {tab === 'sales' ? 'مرتجع بيع' : 'مرتجع شراء'}</Button>}
+          />
         ) : (
-          purchaseReturns.length === 0 ? <Empty /> : (
-            <Table>
-              <thead>
-                <tr>
-                  <Th>الرقم</Th>
-                  <Th>المورد</Th>
-                  <Th>فاتورة الشراء</Th>
-                  <Th>المخزن</Th>
-                  <Th>التاريخ</Th>
-                  <Th>الإجمالي</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredPurchases.map((r) => (
-                  <tr key={r.id} className="row-debit">
-                    <Td className="font-semibold">{r.number}</Td>
-                    <Td>{r.supplier.name}</Td>
-                    <Td>{r.purchaseInvoice?.number || '—'}</Td>
-                    <Td>{r.warehouse.name}</Td>
-                    <Td>{formatDate(r.returnDate)}</Td>
-                    <Td className="font-bold">{formatMoney(r.total)}</Td>
+          <Table>
+            <thead>
+              <tr>
+                <Th>الرقم</Th>
+                <Th>{tab === 'sales' ? 'العميل' : 'المورد'}</Th>
+                <Th>{tab === 'sales' ? 'فاتورة البيع' : 'فاتورة الشراء'}</Th>
+                <Th>المخزن</Th>
+                <Th>الأصناف</Th>
+                <Th>التاريخ</Th>
+                <Th>الإجمالي</Th>
+                <Th></Th>
+              </tr>
+            </thead>
+            <tbody>
+              {(tab === 'sales' ? filteredSales : filteredPurchases).map((r) => {
+                const party = 'customer' in r ? r.customer.name : r.supplier.name;
+                const inv = 'salesInvoice' in r ? r.salesInvoice?.number : r.purchaseInvoice?.number;
+                return (
+                  <tr key={r.id} className={tab === 'sales' ? 'row-credit' : 'row-debit'}>
+                    <Td><span className="font-mono text-xs font-bold text-brand-700" dir="ltr">{r.number}</span></Td>
+                    <Td className="font-bold text-slate-900">{party}</Td>
+                    <Td><span className="font-mono text-xs text-slate-500" dir="ltr">{inv || '—'}</span></Td>
+                    <Td className="text-slate-600">{r.warehouse.name}</Td>
+                    <Td><Badge tone="slate">{r.lines.length} صنف · {r.lines.reduce((s, l) => s + l.quantity, 0)} وحدة</Badge></Td>
+                    <Td className="whitespace-nowrap text-slate-500">{formatDate(r.returnDate)}</Td>
+                    <Td className={`whitespace-nowrap font-extrabold ${tab === 'sales' ? 'text-rose-600' : 'text-sky-700'}`}>{formatMoney(r.total)}</Td>
+                    <Td>
+                      <button type="button" onClick={() => setDetail(r)} aria-label="عرض التفاصيل" className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-brand-50 hover:text-brand-700">
+                        <Eye size={16} />
+                      </button>
+                    </Td>
                   </tr>
-                ))}
-              </tbody>
-            </Table>
-          )
+                );
+              })}
+            </tbody>
+          </Table>
         )}
       </Card>
+
+      <Modal open={!!detail} onClose={() => setDetail(null)} title={detail ? `تفاصيل المرتجع ${detail.number}` : ''} wide>
+        {detail && (
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-4">
+              <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-muted">{'customer' in detail ? 'العميل' : 'المورد'}</div><div className="font-bold">{'customer' in detail ? detail.customer.name : detail.supplier.name}</div></div>
+              <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-muted">الفاتورة الأصلية</div><div className="font-mono text-sm font-bold" dir="ltr">{('salesInvoice' in detail ? detail.salesInvoice?.number : detail.purchaseInvoice?.number) || '—'}</div></div>
+              <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-muted">المخزن · التاريخ</div><div className="font-bold">{detail.warehouse.name} · {formatDate(detail.returnDate)}</div></div>
+              <div className="rounded-xl bg-brand-50 p-3"><div className="text-xs text-brand-700">الإجمالي</div><div className="text-lg font-extrabold text-brand-800">{formatMoney(detail.total)}</div></div>
+            </div>
+            <Table>
+              <thead><tr><Th>الصنف</Th><Th>الكمية</Th><Th>{'customer' in detail ? 'سعر البيع' : 'التكلفة'}</Th><Th>الإجمالي</Th></tr></thead>
+              <tbody>
+                {detail.lines.map((l, i) => (
+                  <tr key={i}>
+                    <Td className="font-semibold">{l.product.name}</Td>
+                    <Td className="tabular-nums">{l.quantity}</Td>
+                    <Td className="tabular-nums">{formatMoney('unitPrice' in l ? l.unitPrice : l.unitCost)}</Td>
+                    <Td className="font-bold tabular-nums">{formatMoney(l.total)}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          </div>
+        )}
+      </Modal>
 
       <Modal open={open} onClose={() => setOpen(false)} title={tab === 'sales' ? 'مرتجع بيع' : 'مرتجع شراء'} wide>
         {tab === 'sales' ? (

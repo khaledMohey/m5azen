@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
 }
 
 datasource db {
@@ -102,15 +103,18 @@ model User {
   passwordHash String
   fullName     String
   role         Role     @default(SALES)
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   cashTransactions CashTransaction[]
   salesInvoices    SalesInvoice[]    @relation("SalesCreatedBy")
   purchaseInvoices PurchaseInvoice[] @relation("PurchaseCreatedBy")
   shifts           CashierShift[]
   warehouseLinks   UserWarehouse[]
+  orgNodeId        String?
+  orgNode          OrgNode?          @relation(fields: [orgNodeId], references: [id], onDelete: SetNull)
 }
 
 model Warehouse {
@@ -166,6 +170,7 @@ model Product {
   wholesalePrice Float    @default(0)
   packUnit       String?
   packSize       Float    @default(1)
+  imageFile      String?
   isActive       Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -349,6 +354,10 @@ model SalesInvoice {
   lines     SalesInvoiceLine[]
   receipts  Receipt[]
   returns   SalesReturn[]
+
+  @@index([invoiceDate])
+  @@index([status])
+  @@index([customerId])
 }
 
 model SalesInvoiceLine {
@@ -389,6 +398,10 @@ model PurchaseInvoice {
   lines     PurchaseInvoiceLine[]
   payments  Payment[]
   returns   PurchaseReturn[]
+
+  @@index([invoiceDate])
+  @@index([status])
+  @@index([supplierId])
 }
 
 model PurchaseInvoiceLine {
@@ -693,4 +706,192 @@ model JournalLine {
 
   entry   JournalEntry  @relation(fields: [entryId], references: [id], onDelete: Cascade)
   account LedgerAccount @relation(fields: [accountId], references: [id])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  userName  String?
+  action    String
+  method    String
+  path      String
+  status    String   @default("success")
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId])
+}
+
+model AppNotification {
+  id        String    @id @default(cuid())
+  dedupeKey String    @unique
+  category  String
+  title     String
+  body      String
+  severity  String    @default("info")
+  href      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([readAt])
+}
+
+enum OrgKind {
+  ADMINISTRATION
+  DEPARTMENT
+  JOB_TITLE
+  STAFF_GROUP
+}
+
+model OrgNode {
+  id          String   @id @default(cuid())
+  kind        OrgKind
+  name        String
+  code        String?
+  subtitle    String?
+  levelMark   String?
+  parentId    String?
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  parent   OrgNode?  @relation("OrgParent", fields: [parentId], references: [id])
+  children OrgNode[] @relation("OrgParent")
+  members  User[]
+
+  @@index([kind])
+}
+
+model RecordNote {
+  id         String   @id @default(cuid())
+  entityType String
+  entityId   String
+  body       String
+  userId     String?
+  userName   String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  REVIEW
+  APPROVED
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model WorkTask {
+  id            String       @id @default(cuid())
+  title         String
+  description   String?
+  status        TaskStatus   @default(PENDING)
+  priority      TaskPriority @default(MEDIUM)
+  assigneeId    String?
+  assigneeName  String?
+  dueDate       DateTime?
+  entityType    String?
+  entityId      String?
+  entityLabel   String?
+  createdById   String?
+  createdByName String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  comments      TaskComment[]
+
+  @@index([status])
+  @@index([assigneeId])
+  @@index([entityType, entityId])
+}
+
+model TaskComment {
+  id        String   @id @default(cuid())
+  taskId    String
+  body      String
+  userId    String?
+  userName  String?
+  createdAt DateTime @default(now())
+  task      WorkTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+}
+
+model SavedReport {
+  id         String   @id @default(cuid())
+  name       String
+  definition String
+  ownerId    String?
+  ownerName  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([ownerId])
+}
+
+model SavedView {
+  id        String   @id @default(cuid())
+  name      String
+  module    String
+  query     String
+  ownerId   String
+  ownerName String?
+  createdAt DateTime @default(now())
+
+  @@index([module, ownerId])
+}
+
+model Attachment {
+  id             String   @id @default(cuid())
+  entityType     String
+  entityId       String
+  fileName       String
+  mimeType       String
+  size           Int
+  storageName    String
+  uploadedById   String?
+  uploadedByName String?
+  createdAt      DateTime @default(now())
+
+  @@index([entityType, entityId])
+}
+
+/// File contents (product images, attachments) so uploads survive hosts with ephemeral disks.
+model FileBlob {
+  key       String   @id
+  mimeType  String
+  data      Bytes
+  createdAt DateTime @default(now())
+}
+
+model AutomationRule {
+  id        String   @id @default(cuid())
+  name      String
+  trigger   String
+  action    String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  runs      AutomationRun[]
+}
+
+model AutomationRun {
+  id        String   @id @default(cuid())
+  ruleId    String
+  dedupeKey String   @unique
+  summary   String
+  createdAt DateTime @default(now())
+  rule      AutomationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
 }

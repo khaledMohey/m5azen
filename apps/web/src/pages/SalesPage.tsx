@@ -1,12 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Printer, Eye, ShoppingCart, Receipt, Trash2, Pencil } from 'lucide-react';
-import { api, formatDate, formatMoney } from '../lib/api';
+import ExcelJS from 'exceljs';
+import { api, formatDate, formatMoney, initialQuery, productImageUrl } from '../lib/api';
+import { dueTone } from '../lib/due';
+import { DueAmount } from '../components/DueAmount';
+import { AddLineButton, EditorErrors, EditorSection, InvoiceEditor, LineCard, SummaryRow } from '../components/InvoiceEditor';
+import { useConfirm, usePrompt, useToast } from '../lib/feedback';
+import { usePagedList } from '../lib/paging';
+import { useColumns } from '../lib/columns';
+import { IconAction, ListBar } from '../components/ListBar';
 import {
-  Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, PrintHeader, SearchBox, Select, StatusBadge, Table, Td, Th,
+  Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, Pager, PrintHeader, Select, StatusBadge, Table, Td, Th, todayIso,
 } from '../components/ui';
 
 type Party = { id: string; name: string; priceList?: string };
-type Product = { id: string; name: string; sku: string; salePrice: number; wholesalePrice?: number; barcode?: string | null };
+type Product = { id: string; name: string; sku: string; salePrice: number; wholesalePrice?: number; barcode?: string | null; imageFile?: string | null };
 type Account = { id: string; name: string };
 type Line = { productId: string; quantity: number | ''; unitPrice: number | ''; discount: number | '' };
 
@@ -39,8 +47,27 @@ const METHODS: Record<string, string> = {
 
 const emptyLine = (): Line => ({ productId: '', quantity: '', unitPrice: '', discount: '' });
 const num = (v: number | '') => (v === '' ? 0 : v);
+const SALE_VIEW = 'm5azen.salesView';
+type SaleFilter = 'all' | 'DRAFT' | 'CONFIRMED' | 'PARTIAL' | 'PAID' | 'CANCELLED' | 'due';
+const SALE_FILTERS: { id: SaleFilter; label: string }[] = [
+  { id: 'all', label: 'كل الفواتير' },
+  { id: 'due', label: 'عليها متبقي' },
+  { id: 'PAID', label: 'مدفوعة' },
+  { id: 'PARTIAL', label: 'تحصيل جزئي' },
+  { id: 'CONFIRMED', label: 'مؤكدة' },
+  { id: 'DRAFT', label: 'مسودة' },
+  { id: 'CANCELLED', label: 'ملغاة' },
+];
+
+function owed(inv: { status: string; total: number; paidAmount: number }) {
+  if (inv.status === 'CANCELLED') return 0;
+  return Math.max(0, inv.total - inv.paidAmount);
+}
 
 export function SalesPage() {
+  const confirm = useConfirm();
+  const promptText = usePrompt();
+  const toast = useToast();
   const [items, setItems] = useState<Invoice[]>([]);
   const [customers, setCustomers] = useState<Party[]>([]);
   const [warehouses, setWarehouses] = useState<Party[]>([]);
@@ -48,7 +75,9 @@ export function SalesPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<Invoice | null>(null);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialQuery);
+  const [status, setStatus] = useState<SaleFilter>('all');
+  const [listView, setListView] = useState<'table' | 'cards'>(() => (localStorage.getItem(SALE_VIEW) === 'cards' ? 'cards' : 'table'));
   const [form, setForm] = useState({
     customerId: '',
     warehouseId: '',
@@ -72,6 +101,8 @@ export function SalesPage() {
     paymentMethod: 'CASH',
   });
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [triedSave, setTriedSave] = useState(false);
   const [shift, setShift] = useState<{ id: string; openingCash: number; account: { name: string } } | null>(null);
   const [useShift, setUseShift] = useState(false);
   const [customerPrices, setCustomerPrices] = useState<Record<string, number>>({});
@@ -119,11 +150,51 @@ export function SalesPage() {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter((inv) =>
-      [inv.number, inv.customer.name, inv.warehouse.name, inv.status].some((x) => x.toLowerCase().includes(q)),
-    );
-  }, [items, search]);
+    return items.filter((inv) => {
+      if (status === 'due' && owed(inv) <= 0.009) return false;
+      if (status !== 'all' && status !== 'due' && inv.status !== status) return false;
+      if (!q) return true;
+      return [inv.number, inv.customer.name, inv.warehouse.name, inv.status].some((x) => x.toLowerCase().includes(q));
+    });
+  }, [items, search, status]);
+
+  const pager = usePagedList(filtered, `${search}:${status}`);
+  const dueCounts = useMemo(() => {
+    const counts = { red: 0, yellow: 0, green: 0 };
+    for (const inv of items) {
+      if (inv.status === 'CANCELLED') continue;
+      const tone = dueTone(inv.invoiceDate, inv.total - inv.paidAmount);
+      if (tone === 'red' || tone === 'yellow' || tone === 'green') counts[tone] += 1;
+    }
+    return counts;
+  }, [items]);
+  const formDueDate = (editingId ? items.find((row) => row.id === editingId)?.invoiceDate : '') || todayIso();
+  const stats = useMemo(() => {
+    const live = items.filter((inv) => inv.status !== 'CANCELLED');
+    return {
+      count: items.length,
+      total: live.reduce((sum, inv) => sum + inv.total, 0),
+      paid: live.reduce((sum, inv) => sum + inv.paidAmount, 0),
+      due: live.reduce((sum, inv) => sum + owed(inv), 0),
+    };
+  }, [items]);
+  const saleColumns = useColumns('m5azen.cols.sales', [
+    { id: 'number', label: 'الرقم' },
+    { id: 'customer', label: 'العميل' },
+    { id: 'warehouse', label: 'المخزن' },
+    { id: 'date', label: 'التاريخ' },
+    { id: 'total', label: 'الإجمالي' },
+    { id: 'paid', label: 'المدفوع' },
+    { id: 'due', label: 'المتبقي' },
+    { id: 'status', label: 'الحالة' },
+  ]);
+
+  useEffect(() => {
+    const open = new URLSearchParams(window.location.search).get('open');
+    if (!open || !items.length) return;
+    const invoice = items.find((row) => row.id === open || row.number === open);
+    if (invoice) setView(invoice);
+  }, [items]);
 
   function updateLine(i: number, patch: Partial<Line>) {
     setLines((prev) => prev.map((l, idx) => {
@@ -141,6 +212,16 @@ export function SalesPage() {
   const taxAmount = Math.round((linesTotal - num(form.discount)) * num(form.tax) * 100) / 10000;
   const grand = linesTotal - num(form.discount) + taxAmount;
   const remaining = Math.max(0, grand - num(form.paidAmount));
+  const filledLines = lines.filter((l) => l.productId);
+  const badLine = (l: Line) => !!l.productId && !(num(l.quantity) > 0);
+  const formErrors = [
+    !form.customerId && 'اختر العميل',
+    !form.warehouseId && 'اختر المخزن',
+    !filledLines.length && 'أضف صنفًا واحدًا على الأقل',
+    lines.some(badLine) && 'كل بند لازم يكون له كمية أكبر من صفر',
+    num(form.paidAmount) > grand + 0.009 && 'المدفوع أكبر من إجمالي الفاتورة',
+    form.confirm && num(form.paidAmount) > 0 && !form.cashAccountId && 'اختر حساب الخزنة للمبلغ المدفوع',
+  ].filter(Boolean) as string[];
 
   const posLinesTotal = posCart.reduce((s, l) => s + num(l.quantity) * num(l.unitPrice), 0);
   const posPaid = posForm.paidAmount === '' ? posLinesTotal : num(posForm.paidAmount);
@@ -151,7 +232,24 @@ export function SalesPage() {
     return p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
   });
 
+  function playAddSound() {
+    const audio = new AudioContext();
+    const osc = audio.createOscillator();
+    const gain = audio.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(740, audio.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(1180, audio.currentTime + 0.07);
+    gain.gain.setValueAtTime(0.05, audio.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.16);
+    osc.connect(gain);
+    gain.connect(audio.destination);
+    osc.start();
+    osc.stop(audio.currentTime + 0.17);
+    osc.onended = () => audio.close();
+  }
+
   function addPosProduct(p: Product) {
+    playAddSound();
     setPosCart((prev) => {
       const idx = prev.findIndex((l) => l.productId === p.id);
       if (idx >= 0) {
@@ -175,6 +273,8 @@ export function SalesPage() {
   }
 
   async function save() {
+    setTriedSave(true);
+    if (formErrors.length) return;
     const payload = {
       customerId: form.customerId,
       warehouseId: form.warehouseId,
@@ -193,18 +293,27 @@ export function SalesPage() {
         discount: num(l.discount),
       })),
     };
-    await api(editingId ? `/sales/${editingId}` : '/sales', {
-      method: editingId ? 'PATCH' : 'POST',
-      body: JSON.stringify(payload),
-    });
-    setEditingId(null);
-    setOpen(false);
-    setForm({
-      customerId: '', warehouseId: '', discount: '', tax: '', paidAmount: '',
-      cashAccountId: '', paymentMethod: 'CASH', notes: '', confirm: true,
-    });
-    setLines([emptyLine()]);
-    load();
+    setSaving(true);
+    try {
+      await api(editingId ? `/sales/${editingId}` : '/sales', {
+        method: editingId ? 'PATCH' : 'POST',
+        body: JSON.stringify(payload),
+      });
+      toast.success(editingId ? 'تم تعديل الفاتورة' : 'تم حفظ الفاتورة');
+      setEditingId(null);
+      setOpen(false);
+      setTriedSave(false);
+      setForm({
+        customerId: '', warehouseId: '', discount: '', tax: '', paidAmount: '',
+        cashAccountId: '', paymentMethod: 'CASH', notes: '', confirm: true,
+      });
+      setLines([emptyLine()]);
+      load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'تعذر حفظ الفاتورة');
+    } finally {
+      setSaving(false);
+    }
   }
 
   function printInvoice(inv: Invoice) {
@@ -213,18 +322,26 @@ export function SalesPage() {
   }
 
   async function removeInvoice(id: string) {
-    if (!confirm('حذف الفاتورة وإلغاء أثرها على المخزون والحسابات؟')) return;
+    const ok = await confirm({
+      title: 'حذف فاتورة البيع',
+      message: 'حذف الفاتورة وإلغاء أثرها على المخزون والحسابات؟',
+      confirmLabel: 'حذف',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await api(`/sales/${id}`, { method: 'DELETE' });
       if (view?.id === id) setView(null);
+      toast.success('تم حذف الفاتورة');
       load();
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'تعذر حذف الفاتورة');
+      toast.error(e instanceof Error ? e.message : 'تعذر حذف الفاتورة');
     }
   }
 
   async function editInvoice(inv: Invoice) {
     setEditingId(inv.id);
+    setTriedSave(false);
     setForm({
       customerId: inv.customer.id,
       warehouseId: inv.warehouse.id,
@@ -248,24 +365,32 @@ export function SalesPage() {
 
   async function openShift() {
     const accountId = accounts[0]?.id;
-    if (!accountId) return alert('أضف حساب خزنة أولاً');
-    const opening = Number(prompt('رصيد بداية الوردية', '0') || '0');
+    if (!accountId) {
+      toast.error('أضف حساب خزنة أولاً');
+      return;
+    }
+    const raw = await promptText({ title: 'رصيد بداية الوردية', defaultValue: '0', confirmLabel: 'فتح' });
+    if (raw == null) return;
+    const opening = Number(raw || '0');
     const row = await api<{ id: string; openingCash: number; account: { name: string } }>('/finance/shifts', {
       method: 'POST',
       body: JSON.stringify({ cashAccountId: accountId, openingCash: opening }),
     });
     setShift(row);
     setUseShift(false);
+    toast.success('تم فتح الوردية');
   }
 
   async function closeShift() {
     if (!shift) return;
-    const closing = Number(prompt('النقدية المعدودة في الدرج', String(shift.openingCash)) || '0');
+    const raw = await promptText({ title: 'النقدية المعدودة في الدرج', defaultValue: String(shift.openingCash), confirmLabel: 'قفل' });
+    if (raw == null) return;
+    const closing = Number(raw || '0');
     const closed = await api<{ difference: number }>(`/finance/shifts/${shift.id}/close`, {
       method: 'POST',
       body: JSON.stringify({ closingCash: closing }),
     });
-    alert(`اتقفلت الوردية. الفرق: ${formatMoney(closed.difference)}`);
+    toast.success(`اتقفلت الوردية. الفرق: ${formatMoney(closed.difference)}`);
     setShift(null);
     setUseShift(false);
   }
@@ -308,130 +433,297 @@ export function SalesPage() {
     load();
   }
 
+  function openInvoiceForm() {
+    setEditingId(null);
+    setTriedSave(false);
+    setForm({
+      customerId: '', warehouseId: warehouses.length === 1 ? warehouses[0].id : '', discount: '', tax: '', paidAmount: '',
+      cashAccountId: accounts[0]?.id || '', paymentMethod: 'CASH', notes: '', confirm: true,
+    });
+    setLines([emptyLine()]);
+    setOpen(true);
+  }
+
+  async function exportRows() {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('المبيعات');
+    sheet.addRow(['الرقم', 'العميل', 'المخزن', 'التاريخ', 'الإجمالي', 'المدفوع', 'المتبقي', 'الحالة']);
+    filtered.forEach((inv) => sheet.addRow([inv.number, inv.customer.name, inv.warehouse.name, formatDate(inv.invoiceDate), inv.total, inv.paidAmount, owed(inv), inv.status]));
+    const buffer = await workbook.xlsx.writeBuffer();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([buffer]));
+    link.download = 'sales.xlsx';
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
   return (
     <div>
-      <PageHeader
-        title="المبيعات"
-        subtitle="اختر نقطة البيع أو فاتورة مبيعات"
-        actions={
-          <SearchBox value={search} onChange={setSearch} placeholder="بحث فاتورة / عميل..." />
-        }
-      />
+      <PageHeader title="المبيعات" subtitle="نقطة البيع وفواتير العملاء والتحصيل" />
 
-      <Card className="mb-4">
-        {shift ? (
-          <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
-            <div>
-              <div className="font-bold">وردية مفتوحة — {shift.account?.name}</div>
-              <div className="text-muted">رصيد البداية {formatMoney(shift.openingCash)}. البيع يشتغل حتى لو مش محسوب على الوردية.</div>
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {([
+          { key: 'all' as const, label: 'فواتير البيع', value: String(stats.count), hint: 'كل الحالات', stripe: 'bg-brand-700' },
+          { key: 'all' as const, label: 'إجمالي المبيعات', value: formatMoney(stats.total), hint: 'بدون الملغى', stripe: 'bg-brand-500' },
+          { key: 'PAID' as const, label: 'المحصّل', value: formatMoney(stats.paid), hint: 'مدفوع على الفواتير', stripe: 'bg-emerald-600' },
+          { key: 'due' as const, label: 'المتبقي على العملاء', value: formatMoney(stats.due), hint: 'ذمم لم تُحصَّل', stripe: stats.due > 0 ? 'bg-rose-600' : 'bg-emerald-600' },
+        ]).map((card) => (
+          <button key={card.label} type="button" onClick={() => setStatus(card.key)} className={`overflow-hidden rounded-2xl border bg-white text-right shadow-sm ${status === card.key && card.key !== 'all' ? 'border-brand-700 ring-2 ring-brand-700/30' : 'border-slate-200'}`}>
+            <div className={`h-1 ${card.stripe}`} />
+            <div className="px-4 py-3">
+              <div className="text-xs font-bold text-muted">{card.label}</div>
+              <div className="mt-1 text-xl font-extrabold text-slate-900">{card.value}</div>
+              <div className="mt-1 text-[11px] text-muted">{card.hint}</div>
             </div>
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-2">
-                <input type="checkbox" checked={useShift} onChange={(e) => setUseShift(e.target.checked)} />
-                احتساب العملية الجاية في الوردية
-              </label>
-              <Button variant="secondary" onClick={closeShift}>قفل الوردية</Button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
-            <div>
-              <div className="font-bold">من غير وردية</div>
-              <div className="text-muted">فتح الوردية اختياري. تقدر تبيع فاتورة أو من نقطة البيع من غيرها.</div>
-            </div>
-            <Button variant="secondary" onClick={openShift}>فتح وردية</Button>
+          </button>
+        ))}
+      </div>
+
+      <div className="mb-4 grid gap-3 lg:grid-cols-[1.2fr_1fr_1.1fr]">
+        <button type="button" onClick={openPos} className="rounded-2xl bg-gradient-to-br from-brand-700 to-brand-950 p-5 text-right text-white shadow-sm">
+          <span className="mb-3 grid h-11 w-11 place-items-center rounded-2xl bg-white/10"><ShoppingCart size={20} /></span>
+          <div className="text-lg font-extrabold">نقطة البيع</div>
+          <div className="mt-1 text-sm text-brand-100">بيع سريع بالصورة والصوت، ثم التحصيل</div>
+        </button>
+        <button type="button" onClick={openInvoiceForm} className="rounded-2xl border border-slate-200 bg-white p-5 text-right shadow-sm hover:border-brand-300">
+          <span className="mb-3 grid h-11 w-11 place-items-center rounded-2xl bg-brand-50 text-brand-700"><Receipt size={20} /></span>
+          <div className="text-lg font-extrabold text-slate-900">فاتورة مبيعات</div>
+          <div className="mt-1 text-sm text-muted">خصم، ضريبة، وتحصيل جزئي</div>
+        </button>
+        <div className="flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          {shift ? (
+            <>
+              <div>
+                <div className="text-xs font-bold text-brand-700">وردية مفتوحة</div>
+                <div className="mt-1 font-extrabold">{shift.account?.name}</div>
+                <div className="mt-1 text-sm text-muted">رصيد البداية {formatMoney(shift.openingCash)}</div>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={useShift} onChange={(e) => setUseShift(e.target.checked)} />
+                  احسب البيع على الوردية
+                </label>
+                <Button variant="secondary" onClick={closeShift}>قفل الوردية</Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <div className="text-xs font-bold text-muted">الوردية</div>
+                <div className="mt-1 font-extrabold">البيع متاح من غيرها</div>
+                <div className="mt-1 text-sm text-muted">افتح وردية لو عايز تقفل الصندوق في آخر اليوم</div>
+              </div>
+              <Button className="mt-3" variant="secondary" onClick={openShift}>فتح وردية</Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      <Card>
+        {(dueCounts.red + dueCounts.yellow + dueCounts.green) > 0 && (
+          <div className="mb-3 flex flex-wrap gap-2 text-xs font-bold">
+            {dueCounts.red > 0 && <span className="rounded-full bg-rose-100 px-3 py-1 text-rose-700">متأخر: {dueCounts.red}</span>}
+            {dueCounts.yellow > 0 && <span className="rounded-full bg-amber-100 px-3 py-1 text-amber-800">أقل من 5 أيام: {dueCounts.yellow}</span>}
+            {dueCounts.green > 0 && <span className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-800">باقي 5 أيام: {dueCounts.green}</span>}
           </div>
         )}
-      </Card>
-
-      <div className="mb-4 grid gap-3 sm:grid-cols-2">
-        <button
-          type="button"
-          onClick={openPos}
-          className="rounded-2xl border border-brand-200 bg-gradient-to-br from-brand-700 to-brand-900 p-5 text-right text-white shadow-sm"
-        >
-          <ShoppingCart className="mb-2" size={22} />
-          <div className="text-lg font-extrabold">نقطة البيع POS</div>
-          <div className="mt-1 text-sm text-brand-100">بيع سريع: اختار الصنف، الكمية، وادفع</div>
-        </button>
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="rounded-2xl border border-slate-200 bg-white p-5 text-right shadow-sm hover:border-brand-300"
-        >
-          <Receipt className="mb-2 text-brand-700" size={22} />
-          <div className="text-lg font-extrabold text-slate-900">فاتورة مبيعات</div>
-          <div className="mt-1 text-sm text-muted">فاتورة كاملة بخصم وضريبة وتحصيل جزئي</div>
-        </button>
-      </div>
-      <Card>
-        {filtered.length === 0 ? <Empty /> : (
+        <ListBar
+          search={search}
+          onSearch={setSearch}
+          placeholder="بحث برقم الفاتورة أو العميل"
+          view={listView}
+          onView={(mode) => { setListView(mode); localStorage.setItem(SALE_VIEW, mode); }}
+          onExport={exportRows}
+          columns={saleColumns.columns}
+          onToggleColumn={saleColumns.toggle}
+          filterActive={status !== 'all'}
+          filter={(
+            <div className="space-y-1">
+              <div className="mb-2 text-xs font-bold text-muted">حالة الفاتورة</div>
+              {SALE_FILTERS.map((item) => (
+                <button key={item.id} type="button" className={`block w-full rounded-lg px-2 py-1.5 text-right text-sm ${status === item.id ? 'bg-brand-700 font-bold text-white' : 'hover:bg-slate-50'}`} onClick={() => setStatus(item.id)}>{item.label}</button>
+              ))}
+            </div>
+          )}
+        />
+        {filtered.length === 0 ? <Empty text="لا توجد فواتير مطابقة" hint="غيّر البحث أو حالة الفاتورة" /> : listView === 'cards' ? (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {pager.slice.map((inv) => (
+                <div key={inv.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-brand-700">{inv.number}</div>
+                      <div className="mt-1 truncate text-base font-extrabold">{inv.customer.name}</div>
+                      <div className="mt-1 text-xs text-muted">{inv.warehouse.name} · {formatDate(inv.invoiceDate)}</div>
+                    </div>
+                    <StatusBadge status={inv.status} />
+                  </div>
+                  <div className="mt-4 flex items-end justify-between gap-3">
+                    <div>
+                      <div className="text-xs text-muted">الإجمالي</div>
+                      <div className="font-extrabold">{formatMoney(inv.total)}</div>
+                      <div className="mt-1"><DueAmount date={inv.invoiceDate} remaining={owed(inv)} /></div>
+                    </div>
+                    <div className="flex gap-1">
+                      <IconAction label="عرض" onClick={() => setView(inv)}><Eye size={14} /></IconAction>
+                      <IconAction label="تعديل" onClick={() => editInvoice(inv)}><Pencil size={14} /></IconAction>
+                      <IconAction label="طباعة" onClick={() => printInvoice(inv)}><Printer size={14} /></IconAction>
+                      <IconAction label="حذف" danger onClick={() => removeInvoice(inv.id)}><Trash2 size={14} /></IconAction>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+          </>
+        ) : (
+          <>
           <Table>
             <thead>
               <tr>
-                <Th>الرقم</Th>
-                <Th>العميل</Th>
-                <Th>المخزن</Th>
-                <Th>التاريخ</Th>
-                <Th>الإجمالي</Th>
-                <Th>المدفوع</Th>
-                <Th>المتبقي</Th>
-                <Th>الحالة</Th>
-                <Th></Th>
+                {saleColumns.visible('status') && <Th>الحالة</Th>}
+                {saleColumns.visible('due') && <Th>المتبقي</Th>}
+                {saleColumns.visible('paid') && <Th>المدفوع</Th>}
+                {saleColumns.visible('total') && <Th>الإجمالي</Th>}
+                {saleColumns.visible('date') && <Th>التاريخ</Th>}
+                {saleColumns.visible('warehouse') && <Th>المخزن</Th>}
+                {saleColumns.visible('customer') && <Th>العميل</Th>}
+                {saleColumns.visible('number') && <Th>الرقم</Th>}
+                <Th>الإجراءات</Th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((inv) => (
+              {pager.slice.map((inv) => (
                 <tr key={inv.id} className={`status-${inv.status}`}>
-                  <Td className="font-semibold">{inv.number}</Td>
-                  <Td>{inv.customer.name}</Td>
-                  <Td>{inv.warehouse.name}</Td>
-                  <Td>{formatDate(inv.invoiceDate)}</Td>
-                  <Td>{formatMoney(inv.total)}</Td>
-                  <Td>{formatMoney(inv.paidAmount)}</Td>
-                  <Td className={inv.total - inv.paidAmount > 0 ? 'font-bold text-amber-700' : 'text-emerald-700'}>
-                    {formatMoney(Math.max(0, inv.total - inv.paidAmount))}
-                  </Td>
-                  <Td><StatusBadge status={inv.status} /></Td>
+                  {saleColumns.visible('status') && <Td><StatusBadge status={inv.status} /></Td>}
+                  {saleColumns.visible('due') && <Td><DueAmount date={inv.invoiceDate} remaining={owed(inv)} /></Td>}
+                  {saleColumns.visible('paid') && <Td>{formatMoney(inv.paidAmount)}</Td>}
+                  {saleColumns.visible('total') && <Td className="font-semibold">{formatMoney(inv.total)}</Td>}
+                  {saleColumns.visible('date') && <Td>{formatDate(inv.invoiceDate)}</Td>}
+                  {saleColumns.visible('warehouse') && <Td>{inv.warehouse.name}</Td>}
+                  {saleColumns.visible('customer') && <Td className="font-semibold">{inv.customer.name}</Td>}
+                  {saleColumns.visible('number') && <Td className="font-mono text-xs font-bold text-brand-800">{inv.number}</Td>}
                   <Td>
                     <div className="flex gap-1">
-                      <Button variant="ghost" onClick={() => setView(inv)}><Eye size={14} /></Button>
-                      <Button variant="ghost" onClick={() => printInvoice(inv)}><Printer size={14} /></Button>
-                      <Button variant="ghost" className="text-rose-600" onClick={() => removeInvoice(inv.id)}><Trash2 size={14} /></Button>
+                      <IconAction label="عرض" onClick={() => setView(inv)}><Eye size={14} /></IconAction>
+                      <IconAction label="تعديل" onClick={() => editInvoice(inv)}><Pencil size={14} /></IconAction>
+                      <IconAction label="طباعة" onClick={() => printInvoice(inv)}><Printer size={14} /></IconAction>
+                      <IconAction label="حذف" danger onClick={() => removeInvoice(inv.id)}><Trash2 size={14} /></IconAction>
                     </div>
                   </Td>
                 </tr>
               ))}
             </tbody>
           </Table>
+          <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+          </>
         )}
       </Card>
 
-      <Modal open={open} onClose={() => { setOpen(false); setEditingId(null); }} title={editingId ? 'تعديل فاتورة بيع' : 'فاتورة بيع جديدة'} wide>
-        <div className="space-y-3">
+      <InvoiceEditor
+        open={open}
+        title={editingId ? 'تعديل فاتورة بيع' : 'فاتورة بيع جديدة'}
+        subtitle="اختار العميل والمخزن، ضيف الأصناف، وسجّل المدفوع"
+        icon={<Receipt size={18} />}
+        total={grand}
+        onClose={() => { setOpen(false); setEditingId(null); }}
+        side={(
+          <>
+            <div className="text-sm font-extrabold text-slate-800">الحساب والدفع</div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <Label>خصم الفاتورة</Label>
+                <NumberInput value={form.discount} onValueChange={(v) => setForm({ ...form, discount: v })} />
+              </div>
+              <div>
+                <Label>الضريبة %</Label>
+                <NumberInput value={form.tax} onValueChange={(v) => setForm({ ...form, tax: v })} />
+              </div>
+            </div>
+            <div>
+              <Label>المدفوع الآن</Label>
+              <div className="flex gap-2">
+                <NumberInput value={form.paidAmount} onValueChange={(v) => setForm({ ...form, paidAmount: v })} />
+                <button type="button" className="shrink-0 rounded-xl border border-brand-200 bg-brand-50 px-3 text-xs font-bold text-brand-700 hover:bg-brand-100" onClick={() => setForm({ ...form, paidAmount: Math.round(grand * 100) / 100 })}>كامل</button>
+              </div>
+            </div>
+            {num(form.paidAmount) > 0 && (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label>الخزنة / البنك</Label>
+                  <Select value={form.cashAccountId} onChange={(e) => setForm({ ...form, cashAccountId: e.target.value })}>
+                    <option value="">اختر الحساب</option>
+                    {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </Select>
+                </div>
+                <div>
+                  <Label>طريقة الدفع</Label>
+                  <Select value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value })}>
+                    {Object.entries(METHODS).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+                  </Select>
+                </div>
+              </div>
+            )}
+            <div>
+              <Label>ملاحظات</Label>
+              <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="تظهر على الفاتورة" />
+            </div>
+            <div className="mt-auto space-y-2 rounded-2xl bg-brand-900 px-4 py-4 text-sm">
+              <SummaryRow label={`البنود (${filledLines.length})`} value={formatMoney(linesTotal)} />
+              <SummaryRow label="خصم الفاتورة" value={formatMoney(num(form.discount))} />
+              <SummaryRow label={`الضريبة (${num(form.tax)}%)`} value={formatMoney(taxAmount)} />
+              <SummaryRow label="الإجمالي" value={formatMoney(grand)} strong />
+              <SummaryRow label="المدفوع" value={formatMoney(num(form.paidAmount))} />
+              <div className="flex items-center justify-between rounded-xl bg-white px-3 py-2 font-bold text-slate-900">
+                <span>المتبقي</span>
+                <DueAmount date={formDueDate} remaining={remaining} />
+              </div>
+            </div>
+            <label className="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2 text-sm">
+              <input type="checkbox" checked={form.confirm} onChange={(e) => setForm({ ...form, confirm: e.target.checked })} />
+              تأكيد فوري (خصم المخزون وتحديث رصيد العميل)
+            </label>
+            {triedSave && <EditorErrors errors={formErrors} />}
+            <Button className="w-full !py-3 text-base" onClick={save} disabled={saving}>
+              {saving ? 'جاري الحفظ...' : editingId ? 'حفظ التعديل' : 'حفظ الفاتورة'}
+            </Button>
+          </>
+        )}
+      >
+        <EditorSection title="بيانات الفاتورة">
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <Label>العميل</Label>
-              <Select value={form.customerId} onChange={(e) => setForm({ ...form, customerId: e.target.value })}>
+              <Select className={triedSave && !form.customerId ? 'border-rose-300' : ''} value={form.customerId} onChange={(e) => setForm({ ...form, customerId: e.target.value })}>
                 <option value="">اختر العميل</option>
                 {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </Select>
+              {form.customerId && customers.find((c) => c.id === form.customerId)?.priceList === 'WHOLESALE' && <p className="mt-1 text-xs font-semibold text-brand-700">عميل جملة: الأسعار من قائمة الجملة</p>}
             </div>
             <div>
               <Label>المخزن</Label>
-              <Select value={form.warehouseId} onChange={(e) => setForm({ ...form, warehouseId: e.target.value })}>
+              <Select className={triedSave && !form.warehouseId ? 'border-rose-300' : ''} value={form.warehouseId} onChange={(e) => setForm({ ...form, warehouseId: e.target.value })}>
                 <option value="">اختر المخزن</option>
                 {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
               </Select>
             </div>
           </div>
+        </EditorSection>
 
-          <div className="space-y-3">
-            <div className="text-sm font-semibold text-slate-700">بنود الفاتورة</div>
+        <EditorSection title={`بنود الفاتورة (${filledLines.length})`} action={<AddLineButton onClick={() => setLines((prev) => [...prev, emptyLine()])} />}>
+          <div className="space-y-2">
             {lines.map((l, i) => (
-              <div key={i} className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
-                <div className="mb-2 grid gap-2 sm:grid-cols-12">
-                  <div className="sm:col-span-5">
+              <LineCard
+                key={i}
+                index={i}
+                total={Math.max(0, num(l.quantity) * num(l.unitPrice) - num(l.discount))}
+                invalid={triedSave && badLine(l)}
+                canRemove={lines.length > 1}
+                onRemove={() => setLines((prev) => prev.filter((_, idx) => idx !== i))}
+              >
+                <div className="grid gap-2 sm:grid-cols-12">
+                  <div className="sm:col-span-6">
                     <Label>الصنف</Label>
                     <Select value={l.productId} onChange={(e) => updateLine(i, { productId: e.target.value })}>
                       <option value="">اختر الصنف</option>
@@ -450,102 +742,58 @@ export function SalesPage() {
                     <Label>خصم البند</Label>
                     <NumberInput value={l.discount} onValueChange={(v) => updateLine(i, { discount: v })} />
                   </div>
-                  <div className="flex items-end sm:col-span-1">
-                    <button type="button" className="mb-1 w-full rounded-xl py-2 text-rose-600 hover:bg-rose-50" onClick={() => setLines((prev) => prev.filter((_, idx) => idx !== i))}>
-                      حذف
-                    </button>
-                  </div>
                 </div>
-              </div>
+              </LineCard>
             ))}
-            <Button variant="secondary" type="button" onClick={() => setLines((prev) => [...prev, emptyLine()])}>
-              + إضافة بند
-            </Button>
           </div>
+        </EditorSection>
+      </InvoiceEditor>
 
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div>
-              <Label>خصم الفاتورة</Label>
-              <NumberInput value={form.discount} onValueChange={(v) => setForm({ ...form, discount: v })} />
-            </div>
-            <div>
-              <Label>الضريبة %</Label>
-              <NumberInput value={form.tax} onValueChange={(v) => setForm({ ...form, tax: v })} />
-              <div className="mt-1 text-xs text-muted">قيمة الضريبة: {formatMoney(taxAmount)}</div>
-            </div>
-            <div>
-              <Label>المبلغ المدفوع الآن</Label>
-              <NumberInput value={form.paidAmount} onValueChange={(v) => setForm({ ...form, paidAmount: v })} />
-            </div>
-          </div>
-          {num(form.paidAmount) > 0 && (
-            <>
+      {posOpen && (
+        <div className="fixed inset-0 z-[80] flex flex-col bg-slate-100">
+          <div className="flex items-center justify-between gap-3 bg-brand-950 px-5 py-3 text-white">
+            <div className="flex items-center gap-3">
+              <span className="grid h-10 w-10 place-items-center rounded-2xl bg-white/10"><ShoppingCart size={18} /></span>
               <div>
-                <Label>حساب الخزنة / البنك</Label>
-                <Select value={form.cashAccountId} onChange={(e) => setForm({ ...form, cashAccountId: e.target.value })}>
-                  <option value="">اختر الحساب</option>
-                  {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </Select>
+                <div className="text-lg font-extrabold">نقطة البيع</div>
+                <div className="text-xs text-brand-100">اضغط الصنف لإضافته</div>
               </div>
-              <div>
-                <Label>طريقة الدفع</Label>
-                <Select value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value })}>
-                  <option value="CASH">نقدي</option>
-                  <option value="BANK_TRANSFER">تحويل بنكي</option>
-                  <option value="CHECK">شيك</option>
-                  <option value="CARD">بطاقة</option>
-                  <option value="INSTAPAY">إنستاباي</option>
-                  <option value="OTHER">أخرى</option>
-                </Select>
-              </div>
-            </>
-          )}
-          <div>
-            <Label>ملاحظات</Label>
-            <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
-          </div>
-          <div className="space-y-1 rounded-xl bg-slate-50 px-4 py-3 text-sm">
-            <div className="flex justify-between"><span>الإجمالي</span><strong className="text-lg">{formatMoney(grand)}</strong></div>
-            <div className="flex justify-between"><span>المدفوع</span><span>{formatMoney(num(form.paidAmount))}</span></div>
-            <div className="flex justify-between font-bold text-amber-800">
-              <span>المتبقي</span>
-              <span>{formatMoney(remaining)}</span>
             </div>
+            <div className="text-left">
+              <div className="text-[11px] text-brand-200">الإجمالي</div>
+              <div className="text-xl font-extrabold">{formatMoney(posLinesTotal)}</div>
+            </div>
+            <button type="button" className="rounded-xl bg-white/10 px-4 py-2 text-sm font-bold" onClick={() => setPosOpen(false)}>إغلاق</button>
           </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={form.confirm} onChange={(e) => setForm({ ...form, confirm: e.target.checked })} />
-            تأكيد فوري (خصم مخزون وتحديث ذمم)
-          </label>
-          <Button className="w-full" onClick={save}>حفظ الفاتورة</Button>
-        </div>
-      </Modal>
-
-      <Modal open={posOpen} onClose={() => setPosOpen(false)} title="نقطة البيع" wide>
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div>
-            <Label>بحث صنف</Label>
+        <div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[1fr_22rem]">
+          <div className="flex min-h-0 flex-col">
             <Input
               value={posSearch}
               onChange={(e) => setPosSearch(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); scanPosBarcode(); } }}
               placeholder="اسم أو كود أو باركود ثم Enter"
             />
-            <div className="mt-3 grid max-h-80 grid-cols-2 gap-2 overflow-y-auto">
+            <div className="mt-3 grid flex-1 auto-rows-max grid-cols-2 gap-3 overflow-y-auto sm:grid-cols-3 xl:grid-cols-4">
               {posProducts.map((p) => (
                 <button
                   key={p.id}
                   type="button"
                   onClick={() => addPosProduct(p)}
-                  className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-right hover:border-brand-400 hover:bg-brand-50"
+                  className="overflow-hidden rounded-2xl border border-slate-200 bg-white text-right shadow-sm transition hover:-translate-y-0.5 hover:border-brand-400 hover:shadow-md"
                 >
-                  <div className="text-sm font-bold">{p.name}</div>
-                  <div className="text-xs text-muted">{p.sku}</div>
-                  <div className="mt-1 text-sm font-semibold text-brand-800">{formatMoney(p.salePrice)}</div>
+                  <div className="grid h-28 place-items-center bg-slate-50">
+                    {p.imageFile ? <img src={productImageUrl(p.id, p.imageFile)} alt="" className="h-full w-full object-cover" /> : <ShoppingCart className="text-slate-300" size={28} />}
+                  </div>
+                  <div className="px-3 py-2">
+                    <div className="truncate text-sm font-bold">{p.name}</div>
+                    <div className="text-xs text-muted">{p.sku}</div>
+                    <div className="mt-1 text-sm font-semibold text-brand-800">{formatMoney(p.salePrice)}</div>
+                  </div>
                 </button>
               ))}
             </div>
           </div>
-          <div className="space-y-3">
+          <div className="flex min-h-0 flex-col gap-3 overflow-y-auto rounded-2xl bg-white p-4 shadow-sm">
             <div className="text-sm font-semibold">السلة</div>
             {posCart.length === 0 ? <Empty text="اضغط على صنف لإضافته" /> : (
               <div className="space-y-2">
@@ -553,7 +801,10 @@ export function SalesPage() {
                   const prod = products.find((p) => p.id === l.productId);
                   return (
                     <div key={l.productId} className="grid grid-cols-12 items-end gap-2 rounded-xl bg-slate-50 p-2">
-                      <div className="col-span-5 text-sm font-semibold">{prod?.name}</div>
+                      <div className="col-span-5 flex items-center gap-2 text-sm font-semibold">
+                        {prod?.imageFile && <img src={productImageUrl(prod.id, prod.imageFile)} alt="" className="h-10 w-10 rounded-lg object-cover" />}
+                        <span className="truncate">{prod?.name}</span>
+                      </div>
                       <div className="col-span-3">
                         <Label>كمية</Label>
                         <NumberInput value={l.quantity} onValueChange={(v) => setPosCart((prev) => prev.map((row, idx) => idx === i ? { ...row, quantity: v } : row))} />
@@ -603,36 +854,40 @@ export function SalesPage() {
                 </div>
               </>
             )}
-            <div className="space-y-1 rounded-xl bg-slate-50 px-4 py-3 text-sm">
-              <div className="flex justify-between"><span>الإجمالي</span><strong>{formatMoney(posLinesTotal)}</strong></div>
-              <div className="flex justify-between"><span>المدفوع</span><span>{formatMoney(posPaid)}</span></div>
-              <div className="flex justify-between font-bold text-amber-800"><span>المتبقي</span><span>{formatMoney(posRemaining)}</span></div>
+            <div className="space-y-1 rounded-2xl bg-brand-900 px-4 py-3 text-sm text-white">
+              <div className="flex justify-between"><span className="text-brand-100">الإجمالي</span><strong className="text-lg">{formatMoney(posLinesTotal)}</strong></div>
+              <div className="flex justify-between text-brand-100"><span>المدفوع</span><span className="text-white">{formatMoney(posPaid)}</span></div>
+              <div className="flex justify-between border-t border-white/10 pt-2 font-bold"><span>المتبقي</span><span>{formatMoney(posRemaining)}</span></div>
             </div>
             <Button className="w-full" onClick={savePos} disabled={!posCart.length}>إتمام البيع</Button>
           </div>
         </div>
-      </Modal>
+        </div>
+      )}
 
       <Modal open={!!view} onClose={() => setView(null)} title={`فاتورة ${view?.number || ''}`} wide>
         {view && (
           <div>
             <PrintHeader title={`فاتورة بيع ${view.number}`} subtitle={view.customer.name} />
-            <div className="mb-4 flex justify-between no-print">
-              <StatusBadge status={view.status} />
-              <div className="flex gap-2">
-                <Button variant="secondary" onClick={() => window.print()}><Printer size={14} /> طباعة / PDF</Button>
-                <Button variant="secondary" onClick={() => editInvoice(view)}><Pencil size={14} /> تعديل</Button>
-                <Button variant="danger" onClick={() => removeInvoice(view.id)}><Trash2 size={14} /> حذف</Button>
+            <div className="mb-4 overflow-hidden rounded-2xl bg-brand-900 px-5 py-4 text-white no-print">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs text-brand-200">فاتورة بيع</div>
+                  <div className="text-2xl font-extrabold">{view.number}</div>
+                  <div className="mt-1 text-sm text-brand-100">{view.customer.name} · {view.warehouse.name} · {formatDate(view.invoiceDate)}</div>
+                </div>
+                <StatusBadge status={view.status} />
+              </div>
+              <div className="mt-4 grid gap-3 border-t border-white/10 pt-3 sm:grid-cols-3">
+                <div><div className="text-[11px] text-brand-200">الإجمالي</div><div className="text-lg font-extrabold">{formatMoney(view.total)}</div></div>
+                <div><div className="text-[11px] text-brand-200">المدفوع</div><div className="text-lg font-extrabold">{formatMoney(view.paidAmount)}</div></div>
+                <div><div className="text-[11px] text-brand-200">المتبقي</div><div className="mt-1 inline-flex rounded-xl bg-white px-2 py-1">{view.status === 'CANCELLED' ? <span className="font-bold text-emerald-700">{formatMoney(0)}</span> : <DueAmount date={view.invoiceDate} remaining={owed(view)} />}</div></div>
               </div>
             </div>
-            <div className="mb-4 grid gap-2 text-sm sm:grid-cols-2">
-              <div>العميل: <strong>{view.customer.name}</strong></div>
-              <div>المخزن: <strong>{view.warehouse.name}</strong></div>
-              <div>التاريخ: {formatDate(view.invoiceDate)}</div>
-              <div>المدفوع: {formatMoney(view.paidAmount)}</div>
-              <div className="font-bold text-amber-800">
-                المتبقي: {formatMoney(Math.max(0, view.total - view.paidAmount))}
-              </div>
+            <div className="mb-4 flex justify-end gap-2 no-print">
+              <Button variant="secondary" onClick={() => window.print()}><Printer size={14} /> طباعة / PDF</Button>
+              <Button variant="secondary" onClick={() => editInvoice(view)}><Pencil size={14} /> تعديل</Button>
+              <Button variant="danger" onClick={() => removeInvoice(view.id)}><Trash2 size={14} /> حذف</Button>
             </div>
             <Table>
               <thead>
@@ -656,9 +911,9 @@ export function SalesPage() {
             </Table>
             <div className="mt-4 space-y-1 text-sm">
               <div className="flex justify-between"><span>المدفوع</span><span>{formatMoney(view.paidAmount)}</span></div>
-              <div className="flex justify-between font-bold text-amber-800">
+              <div className="flex justify-between font-bold">
                 <span>المتبقي</span>
-                <span>{formatMoney(Math.max(0, view.total - view.paidAmount))}</span>
+                {view.status === 'CANCELLED' ? <span>{formatMoney(0)}</span> : <DueAmount date={view.invoiceDate} remaining={view.total - view.paidAmount} />}
               </div>
               <div className="flex justify-between text-lg font-extrabold">
                 <span>الإجمالي</span>
