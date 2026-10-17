@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CircleDollarSign, FileText, Hash, MapPin, Pencil, Phone, Plus, Printer, ShieldAlert, Users, Wallet } from 'lucide-react';
+import { CircleDollarSign, FileText, Hash, MapPin, Pencil, Phone, Plus, Printer, Users, Wallet } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { api, formatDate, formatMoney, initialQuery } from '../lib/api';
 import { urgentInvoiceDate } from '../lib/due';
@@ -11,7 +11,7 @@ import { FilterOption, IconAction, ListBar } from '../components/ListBar';
 import { NotesPanel } from '../components/NotesPanel';
 import { EntityWorkspace } from '../components/EntityWorkspace';
 import {
-  Badge, Button, Card, Empty, Field, Input, Modal, NumberInput, PageHeader, Pager, PrintHeader, Select, StatCard, StatGrid, Table, Td, Th,
+  Badge, Button, Card, Empty, Field, Input, Modal, PageHeader, Pager, PrintHeader, Select, StatCard, StatGrid, Table, Td, Th,
 } from '../components/ui';
 
 type Customer = {
@@ -21,7 +21,6 @@ type Customer = {
   phone?: string | null;
   address?: string | null;
   balance: number;
-  creditLimit: number;
   priceList?: string;
   isActive?: boolean;
 };
@@ -31,12 +30,11 @@ type CustomerForm = {
   name: string;
   phone: string;
   address: string;
-  creditLimit: number | '';
   priceList: string;
   isActive: boolean;
 };
 
-const emptyCustomer: CustomerForm = { code: '', name: '', phone: '', address: '', creditLimit: '', priceList: 'RETAIL', isActive: true };
+const emptyCustomer: CustomerForm = { code: '', name: '', phone: '', address: '', priceList: 'RETAIL', isActive: true };
 const CUSTOMER_VIEW = 'm5azen.customersView';
 
 type StatementRow = {
@@ -47,7 +45,7 @@ type StatementRow = {
 export function CustomersPage() {
   const [items, setItems] = useState<Customer[]>([]);
   const [search, setSearch] = useState(initialQuery);
-  const [listView, setListView] = useState<'all' | 'debit' | 'limit'>('all');
+  const [listView, setListView] = useState<'all' | 'debit'>('all');
   const [view, setView] = useState<'table' | 'cards'>(() => (localStorage.getItem(CUSTOMER_VIEW) === 'cards' ? 'cards' : 'table'));
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -98,7 +96,6 @@ export function CustomersPage() {
       const matches = !q || [c.code, c.name, c.phone || ''].some((x) => x.toLowerCase().includes(q));
       if (!matches) return false;
       if (listView === 'debit') return c.balance > 0;
-      if (listView === 'limit') return c.creditLimit > 0 && c.balance >= c.creditLimit;
       return true;
     });
   }, [items, search, listView]);
@@ -106,7 +103,6 @@ export function CustomersPage() {
   const pager = usePagedList(filtered, `${search}:${listView}`);
   const customerColumns = useColumns('m5azen.cols.customers', [
     { id: 'balance', label: 'الرصيد' },
-    { id: 'limit', label: 'حد الائتمان' },
     { id: 'phone', label: 'الهاتف' },
     { id: 'address', label: 'العنوان' },
     { id: 'name', label: 'الاسم' },
@@ -117,7 +113,6 @@ export function CustomersPage() {
     name: form.name.trim().length < 2 ? 'اسم العميل حرفين على الأقل' : '',
   };
   const debitCount = items.filter((row) => row.balance > 0).length;
-  const limitCount = items.filter((row) => row.creditLimit > 0 && row.balance >= row.creditLimit).length;
   const activeCount = items.filter((row) => row.isActive !== false).length;
   const totalDue = items.reduce((sum, row) => sum + Math.max(0, row.balance), 0);
 
@@ -134,7 +129,6 @@ export function CustomersPage() {
       name: row.name,
       phone: row.phone || '',
       address: row.address || '',
-      creditLimit: row.creditLimit,
       priceList: row.priceList || 'RETAIL',
       isActive: row.isActive !== false,
     });
@@ -150,7 +144,6 @@ export function CustomersPage() {
         name: form.name.trim(),
         phone: form.phone.trim(),
         address: form.address.trim(),
-        creditLimit: form.creditLimit === '' ? 0 : form.creditLimit,
         priceList: form.priceList,
         ...(editingId ? { isActive: form.isActive } : {}),
       };
@@ -171,8 +164,8 @@ export function CustomersPage() {
   async function exportRows() {
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('العملاء');
-    sheet.addRow(['الكود', 'الاسم', 'الهاتف', 'العنوان', 'حد الائتمان', 'الرصيد', 'الحالة']);
-    filtered.forEach((row) => sheet.addRow([row.code, row.name, row.phone || '', row.address || '', row.creditLimit, row.balance, row.isActive === false ? 'موقوف' : 'نشط']));
+    sheet.addRow(['الكود', 'الاسم', 'الهاتف', 'العنوان', 'الرصيد', 'الحالة']);
+    filtered.forEach((row) => sheet.addRow([row.code, row.name, row.phone || '', row.address || '', row.balance, row.isActive === false ? 'موقوف' : 'نشط']));
     const buffer = await workbook.xlsx.writeBuffer();
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([buffer]));
@@ -207,7 +200,7 @@ export function CustomersPage() {
   function applyView(query: string) {
     const parsed = JSON.parse(query) as { search?: string; listView?: 'all' | 'debit' | 'limit' };
     setSearch(parsed.search || '');
-    setListView(parsed.listView || 'all');
+    setListView(parsed.listView === 'debit' ? 'debit' : 'all');
   }
 
   return (
@@ -233,7 +226,6 @@ export function CustomersPage() {
         <StatCard label="إجمالي العملاء" value={items.length} hint={`${activeCount} نشط · ${items.length - activeCount} موقوف`} icon={Users} tone="brand" active={listView === 'all'} onClick={() => setListView('all')} />
         <StatCard label="إجمالي المستحقات" value={formatMoney(totalDue)} hint="مبالغ مستحقة على العملاء" icon={Wallet} tone="emerald" />
         <StatCard label="عليهم رصيد" value={debitCount} hint="اضغط لعرضهم فقط" icon={CircleDollarSign} tone="amber" active={listView === 'debit'} onClick={() => setListView('debit')} />
-        <StatCard label="تجاوزوا حد الائتمان" value={limitCount} hint="يحتاجون تحصيل قبل البيع الآجل" icon={ShieldAlert} tone="rose" active={listView === 'limit'} onClick={() => setListView('limit')} />
       </StatGrid>
 
       <Card>
@@ -250,7 +242,7 @@ export function CustomersPage() {
           filter={(
             <div className="space-y-1">
               <div className="mb-2 text-xs font-bold text-muted">تصفية العملاء</div>
-              {([['all', 'الكل'], ['debit', 'عليهم رصيد'], ['limit', 'تجاوزوا الحد']] as const).map(([key, label]) => (
+              {([['all', 'الكل'], ['debit', 'عليهم رصيد']] as const).map(([key, label]) => (
                 <FilterOption key={key} active={listView === key} onClick={() => setListView(key)}>{label}</FilterOption>
               ))}
             </div>
@@ -300,7 +292,6 @@ export function CustomersPage() {
               <thead>
                 <tr>
                   {customerColumns.visible('balance') && <Th>الرصيد</Th>}
-                  {customerColumns.visible('limit') && <Th>حد الائتمان</Th>}
                   {customerColumns.visible('phone') && <Th>الهاتف</Th>}
                   {customerColumns.visible('address') && <Th>العنوان</Th>}
                   {customerColumns.visible('name') && <Th>الاسم</Th>}
@@ -313,7 +304,6 @@ export function CustomersPage() {
                 {pager.slice.map((row) => (
                   <tr key={row.id} className={row.balance > 0 ? 'row-debit' : row.balance < 0 ? 'row-credit' : ''}>
                     {customerColumns.visible('balance') && <Td>{customerBalance(row)}</Td>}
-                    {customerColumns.visible('limit') && <Td>{formatMoney(row.creditLimit)}</Td>}
                     {customerColumns.visible('phone') && <Td><bdi dir="ltr" className="font-medium text-slate-600">{row.phone || '—'}</bdi></Td>}
                     {customerColumns.visible('address') && <Td className="max-w-xs truncate text-muted">{row.address || '—'}</Td>}
                     {customerColumns.visible('name') && (
@@ -358,9 +348,6 @@ export function CustomersPage() {
           </Field>
           <Field label="العنوان" icon={<MapPin size={16} />}>
             <Input value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} />
-          </Field>
-          <Field label="حد الائتمان" hint="صفر يعني بدون حد. أي رقم أكبر يمنع فاتورة الآجل لو الرصيد هيتعداه.">
-            <NumberInput value={form.creditLimit} onValueChange={(value) => setForm({ ...form, creditLimit: value })} />
           </Field>
           <Field label="قائمة السعر">
             <Select value={form.priceList} onChange={(event) => setForm({ ...form, priceList: event.target.value })}>

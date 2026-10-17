@@ -81,8 +81,6 @@ export class SalesService {
     if (data.confirm) {
       for (let i = 0; i < parts.length; i++) receiptNumbers.push(await this.sequence.next('receipts', 'RCP'));
     }
-    if (data.confirm) await this.assertCredit(data.customerId, total - paidAmount);
-
     return this.prisma.$transaction(async (tx) => {
       let status: InvoiceStatus = InvoiceStatus.DRAFT;
       if (data.confirm) {
@@ -166,7 +164,6 @@ export class SalesService {
     const parts = normalizeTenders(payments);
     const paidAmount = parts.length ? sumTenders(parts) : 0;
     if (paidAmount > inv.total + 0.009) throw new BadRequestException('المدفوع أكبر من إجمالي الفاتورة');
-    await this.assertCredit(inv.customerId, inv.total - paidAmount);
     const receiptNumbers: string[] = [];
     for (let i = 0; i < parts.length; i++) receiptNumbers.push(await this.sequence.next('receipts', 'RCP'));
     return this.prisma.$transaction(async (tx) => {
@@ -225,16 +222,6 @@ export class SalesService {
     });
   }
 
-  private async assertCredit(customerId: string, extraDue: number) {
-    const customer = await this.prisma.customer.findUnique({ where: { id: customerId } });
-    if (!customer) throw new NotFoundException('العميل غير موجود');
-    if (customer.creditLimit > 0 && customer.balance + extraDue > customer.creditLimit + 0.001) {
-      throw new BadRequestException(
-        `تجاوز حد الائتمان. الحد ${customer.creditLimit} والرصيد الحالي ${customer.balance}`,
-      );
-    }
-  }
-
   private async assertOpenShift(shiftId: string) {
     const shift = await this.prisma.cashierShift.findUnique({ where: { id: shiftId } });
     if (!shift || shift.status !== 'OPEN') {
@@ -287,7 +274,6 @@ export class SalesService {
     const alreadyPosted = inv.status !== InvoiceStatus.DRAFT;
     const posting = alreadyPosted || !!data.confirm;
     if (posting && paidAmount > 0 && !parts.length) throw new BadRequestException('قسّم المدفوع على طرق الدفع');
-    if (posting) await this.assertCredit(data.customerId, total - paidAmount - (alreadyPosted ? inv.total - inv.paidAmount : 0));
     const receiptNumbers: string[] = [];
     if (posting) {
       for (let i = 0; i < parts.length; i++) receiptNumbers.push(await this.sequence.next('receipts', 'RCP'));

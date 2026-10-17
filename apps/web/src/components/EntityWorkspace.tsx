@@ -7,7 +7,7 @@ type Snapshot = {
   notes: { id: string; body: string }[];
   tasks?: { id: string; title: string; status: string }[];
   attachments: FileRow[];
-  flags?: { creditRisk?: boolean; priceRisk?: boolean };
+  flags?: { priceRisk?: boolean };
   invoices?: { id: string; number: string; total: number; status: string; invoiceDate: string }[];
 };
 
@@ -51,9 +51,9 @@ export function EntityWorkspace({ entityType, entityId }: { entityType: string; 
 
   return (
     <div className="mt-4 space-y-3 border-t border-slate-100 pt-4">
-      {(data.flags?.creditRisk || data.flags?.priceRisk) && (
+      {data.flags?.priceRisk && (
         <div className="rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          {data.flags.creditRisk ? 'هذا العميل تجاوز حد الائتمان.' : 'سعر بيع هذا الصنف أقل من تكلفته.'}
+          سعر بيع هذا الصنف أقل من تكلفته.
         </div>
       )}
       {data.invoices && (

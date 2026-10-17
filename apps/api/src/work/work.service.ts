@@ -30,7 +30,7 @@ const NEXT_STATUS: Record<TaskStatus, TaskStatus[]> = {
   CANCELLED: [TaskStatus.PENDING],
 };
 
-const TRIGGERS = ['LOW_STOCK', 'OVERDUE_INVOICE', 'CREDIT_LIMIT', 'PRICE_RISK', 'SALES_DROP', 'TASK_OVERDUE', 'DUPLICATE_PHONE', 'SLOW_PRODUCT'] as const;
+const TRIGGERS = ['LOW_STOCK', 'OVERDUE_INVOICE', 'PRICE_RISK', 'SALES_DROP', 'TASK_OVERDUE', 'DUPLICATE_PHONE', 'SLOW_PRODUCT'] as const;
 const ACTIONS = ['NOTIFY', 'CREATE_TASK', 'BOTH'] as const;
 
 const EXT_MIME: Record<string, string> = {
@@ -87,7 +87,6 @@ const CATALOG: Record<string, {
       { key: 'name', label: 'الاسم' },
       { key: 'phone', label: 'الهاتف' },
       { key: 'priceList', label: 'قائمة السعر' },
-      { key: 'creditLimit', label: 'حد الائتمان', numeric: true },
       { key: 'balance', label: 'الرصيد', numeric: true },
       { key: 'isActive', label: 'نشط' },
     ],
@@ -153,7 +152,6 @@ export class WorkService {
       triggers: [
         { key: 'LOW_STOCK', label: 'الصنف تحت حد الطلب' },
         { key: 'OVERDUE_INVOICE', label: 'فاتورة بيع متأخرة أكثر من 14 يوم' },
-        { key: 'CREDIT_LIMIT', label: 'عميل تجاوز حد الائتمان' },
         { key: 'PRICE_RISK', label: 'سعر البيع أقل من التكلفة' },
         { key: 'SALES_DROP', label: 'انخفاض المبيعات عن الشهر السابق' },
         { key: 'TASK_OVERDUE', label: 'مهمة تجاوزت تاريخ الاستحقاق' },
@@ -297,7 +295,6 @@ export class WorkService {
           name: row.name,
           phone: row.phone || '',
           priceList: row.priceList,
-          creditLimit: row.creditLimit,
           balance: row.balance,
           isActive: row.isActive ? 'نعم' : 'لا',
         }));
@@ -409,7 +406,7 @@ export class WorkService {
     const [products, balances, customers, overdue, soldLines, thisSales, prevSales, lateTasks] = await Promise.all([
       this.prisma.product.findMany({ where: { isActive: true }, select: { id: true, sku: true, name: true, costPrice: true, salePrice: true, minStock: true } }),
       this.prisma.stockBalance.groupBy({ by: ['productId'], _sum: { quantity: true } }),
-      this.prisma.customer.findMany({ where: { isActive: true }, select: { id: true, name: true, phone: true, balance: true, creditLimit: true } }),
+      this.prisma.customer.findMany({ where: { isActive: true }, select: { id: true, name: true, phone: true } }),
       this.prisma.salesInvoice.findMany({
         where: {
           status: { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] },
@@ -491,16 +488,6 @@ export class WorkService {
 
     const phones = new Map<string, { id: string; name: string }[]>();
     for (const customer of customers) {
-      if (customer.creditLimit > 0 && customer.balance >= customer.creditLimit) {
-        items.push({
-          trigger: 'CREDIT_LIMIT',
-          key: customer.id,
-          title: `تجاوز ائتمان: ${customer.name}`,
-          detail: `الرصيد ${customer.balance.toFixed(2)} والحد ${customer.creditLimit.toFixed(2)}.`,
-          href: `/customers?open=${customer.id}`,
-          suggestion: 'أوقف البيع الآجل حتى التحصيل',
-        });
-      }
       const phone = (customer.phone || '').trim();
       if (!phone) continue;
       const list = phones.get(phone) || [];
@@ -554,7 +541,6 @@ export class WorkService {
       data: [
         { name: 'تنبيه نقص المخزون', trigger: 'LOW_STOCK', action: 'BOTH' },
         { name: 'متابعة الفواتير المتأخرة', trigger: 'OVERDUE_INVOICE', action: 'NOTIFY' },
-        { name: 'مهمة عند تجاوز الائتمان', trigger: 'CREDIT_LIMIT', action: 'CREATE_TASK' },
       ],
     });
   }
@@ -846,8 +832,7 @@ export class WorkService {
         take: 8,
         select: { id: true, number: true, total: true, paidAmount: true, status: true, invoiceDate: true },
       });
-      const creditRisk = !!customer && customer.creditLimit > 0 && customer.balance >= customer.creditLimit;
-      return { entityType, customer, invoices, notes, tasks, attachments, flags: { creditRisk } };
+      return { entityType, customer, invoices, notes, tasks, attachments, flags: {} };
     }
     if (entityType === 'product') {
       const product = await this.prisma.product.findUnique({ where: { id: entityId } });
