@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { Printer, Eye, ShoppingCart, Receipt, Trash2, Pencil } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { api, formatDate, formatMoney, initialQuery, productImageUrl } from '../lib/api';
@@ -14,8 +14,10 @@ import {
   Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, Pager, PrintHeader, Select, StatusBadge, Table, Td, Th, todayIso,
 } from '../components/ui';
 
-type Party = { id: string; name: string; priceList?: string };
+type Party = { id: string; name: string; code?: string; priceList?: string };
 type Product = { id: string; name: string; sku: string; salePrice: number; wholesalePrice?: number; barcode?: string | null; imageFile?: string | null };
+type StockRow = { productId: string; quantity: number; product: Product };
+const WALK_IN_NAME = 'عميل سريع';
 type Account = { id: string; name: string };
 type Line = { productId: string; quantity: number | ''; unitPrice: number | ''; discount: number | '' };
 
@@ -39,6 +41,39 @@ type Invoice = {
 
 const emptyLine = (): Line => ({ productId: '', quantity: '', unitPrice: '', discount: '' });
 const emptyPart = (): TenderPart => ({ methodId: '', amount: '' });
+
+function CustomerPicker({
+  customers,
+  value,
+  invalid,
+  onChange,
+}: {
+  customers: Party[];
+  value: string;
+  invalid?: boolean;
+  onChange: (name: string) => void;
+}) {
+  const listId = useId();
+  const ordered = [...customers].sort((a, b) => {
+    if (a.name === WALK_IN_NAME) return -1;
+    if (b.name === WALK_IN_NAME) return 1;
+    return a.name.localeCompare(b.name, 'ar');
+  });
+  return (
+    <>
+      <Input
+        list={listId}
+        value={value}
+        className={invalid ? 'border-rose-300' : ''}
+        placeholder={WALK_IN_NAME}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <datalist id={listId}>
+        {ordered.map((c) => <option key={c.id} value={c.name} />)}
+      </datalist>
+    </>
+  );
+}
 const num = (v: number | '') => (v === '' ? 0 : v);
 const SALE_VIEW = 'm5azen.salesView';
 type SaleFilter = 'all' | 'DRAFT' | 'CONFIRMED' | 'PARTIAL' | 'PAID' | 'CANCELLED' | 'due';
@@ -72,8 +107,10 @@ export function SalesPage() {
   const [search, setSearch] = useState(initialQuery);
   const [status, setStatus] = useState<SaleFilter>('all');
   const [listView, setListView] = useState<'table' | 'cards'>(() => (localStorage.getItem(SALE_VIEW) === 'cards' ? 'cards' : 'table'));
+  const [stockByWh, setStockByWh] = useState<Record<string, { qty: Record<string, number>; products: Product[] }>>({});
+  const [editCredit, setEditCredit] = useState<{ warehouseId: string; qty: Record<string, number>; posted: boolean } | null>(null);
   const [form, setForm] = useState({
-    customerId: '',
+    customerName: WALK_IN_NAME,
     warehouseId: '',
     discount: '' as number | '',
     tax: '' as number | '',
@@ -86,7 +123,7 @@ export function SalesPage() {
   const [posSearch, setPosSearch] = useState('');
   const [posCart, setPosCart] = useState<Line[]>([]);
   const [posForm, setPosForm] = useState({
-    customerId: '',
+    customerName: WALK_IN_NAME,
     warehouseId: '',
     payments: [emptyPart()] as TenderPart[],
   });
@@ -117,28 +154,83 @@ export function SalesPage() {
       .catch(() => setShift(null));
   }
 
+  const selectedCustomer = customers.find((c) => c.name.trim() === form.customerName.trim());
+
   useEffect(() => {
-    if (!form.customerId) {
+    if (!selectedCustomer) {
       setCustomerPrices({});
       return;
     }
-    api<{ productId: string; price: number }[]>(`/customers/${form.customerId}/prices`)
+    api<{ productId: string; price: number }[]>(`/customers/${selectedCustomer.id}/prices`)
       .then((rows) => {
         const map: Record<string, number> = {};
         rows.forEach((row) => { map[row.productId] = row.price; });
         setCustomerPrices(map);
       })
       .catch(() => setCustomerPrices({}));
-  }, [form.customerId]);
+  }, [selectedCustomer?.id]);
 
-  function priceFor(product: Product, customerId = form.customerId) {
-    if (customerPrices[product.id]) return customerPrices[product.id];
-    const customer = customers.find((c) => c.id === customerId);
+  function priceFor(product: Product, customerName = form.customerName) {
+    if (customerPrices[product.id] && customerName.trim() === form.customerName.trim()) return customerPrices[product.id];
+    const customer = customers.find((c) => c.name.trim() === customerName.trim());
     if (customer?.priceList === 'WHOLESALE' && (product.wholesalePrice || 0) > 0) return product.wholesalePrice || 0;
     return product.salePrice;
   }
 
   useEffect(() => { load(); }, []);
+
+  async function loadStock(warehouseId: string) {
+    if (!warehouseId) return;
+    const rows = await api<StockRow[]>(`/stock/balances?warehouseId=${encodeURIComponent(warehouseId)}`);
+    const qty: Record<string, number> = {};
+    const list: Product[] = [];
+    rows.forEach((row) => {
+      qty[row.product.id] = row.quantity;
+      if (row.quantity > 0) list.push(row.product);
+    });
+    setStockByWh((prev) => ({ ...prev, [warehouseId]: { qty, products: list } }));
+  }
+
+  useEffect(() => {
+    if (form.warehouseId) loadStock(form.warehouseId).catch(() => undefined);
+  }, [form.warehouseId]);
+
+  useEffect(() => {
+    if (posForm.warehouseId) loadStock(posForm.warehouseId).catch(() => undefined);
+  }, [posForm.warehouseId]);
+
+  function stockOf(warehouseId: string) {
+    return stockByWh[warehouseId] || { qty: {}, products: [] };
+  }
+
+  function availableQty(productId: string, warehouseId: string) {
+    const onHand = stockOf(warehouseId).qty[productId] || 0;
+    if (editCredit?.posted && editCredit.warehouseId === warehouseId) return onHand + (editCredit.qty[productId] || 0);
+    return onHand;
+  }
+
+  function productsForSale(warehouseId: string, selectedIds: string[] = []) {
+    if (!warehouseId) return [];
+    const stock = stockOf(warehouseId);
+    const ids = new Set(stock.products.map((p) => p.id));
+    const extra = selectedIds
+      .filter((id) => id && !ids.has(id))
+      .map((id) => products.find((p) => p.id === id))
+      .filter((p): p is Product => !!p);
+    return [...stock.products, ...extra];
+  }
+
+  async function resolveCustomer(name: string) {
+    const trimmed = name.trim();
+    const found = customers.find((c) => c.name.trim() === trimmed);
+    if (found) return found.id;
+    const created = await api<Party>('/customers/by-name', {
+      method: 'POST',
+      body: JSON.stringify({ name: trimmed }),
+    });
+    setCustomers((prev) => prev.some((c) => c.id === created.id) ? prev : [...prev, created].sort((a, b) => a.name.localeCompare(b.name, 'ar')));
+    return created.id;
+  }
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -207,11 +299,13 @@ export function SalesPage() {
   const remaining = Math.max(0, grand - paidNow);
   const filledLines = lines.filter((l) => l.productId);
   const badLine = (l: Line) => !!l.productId && !(num(l.quantity) > 0);
+  const overStock = lines.some((l) => l.productId && num(l.quantity) > availableQty(l.productId, form.warehouseId) + 0.0001);
   const formErrors = [
-    !form.customerId && 'اختر العميل',
+    form.customerName.trim().length < 2 && 'اكتب اسم العميل',
     !form.warehouseId && 'اختر المخزن',
     !filledLines.length && 'أضف صنفًا واحدًا على الأقل',
     lines.some(badLine) && 'كل بند لازم يكون له كمية أكبر من صفر',
+    overStock && 'الكمية أكبر من المتاح في المخزن',
     paidNow > grand + 0.009 && 'المدفوع أكبر من إجمالي الفاتورة',
     form.confirm && form.payments.some((part) => num(part.amount) > 0 && !part.methodId) && 'اختر طريقة الدفع لكل جزء',
   ].filter(Boolean) as string[];
@@ -220,10 +314,10 @@ export function SalesPage() {
   const posEntered = posForm.payments.reduce((sum, part) => sum + num(part.amount), 0);
   const posPaid = posEntered > 0 ? posEntered : (posForm.payments[0]?.methodId ? posLinesTotal : 0);
   const posRemaining = Math.max(0, posLinesTotal - posPaid);
-  const posProducts = products.filter((p) => {
+  const posProducts = productsForSale(posForm.warehouseId).filter((p) => {
     const q = posSearch.trim().toLowerCase();
     if (!q) return true;
-    return p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
+    return p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q) || (p.barcode || '').toLowerCase().includes(q);
   });
 
   function playAddSound() {
@@ -243,22 +337,33 @@ export function SalesPage() {
   }
 
   function addPosProduct(p: Product) {
+    if (!posForm.warehouseId) {
+      toast.error('اختر المخزن أولاً');
+      return;
+    }
+    const onHand = availableQty(p.id, posForm.warehouseId);
+    const inCart = posCart.find((l) => l.productId === p.id);
+    if (num(inCart?.quantity || 0) + 1 > onHand + 0.0001) {
+      toast.error(`المتاح من ${p.name} هو ${onHand}`);
+      return;
+    }
     playAddSound();
     setPosCart((prev) => {
       const idx = prev.findIndex((l) => l.productId === p.id);
       if (idx >= 0) {
         return prev.map((l, i) => i === idx ? { ...l, quantity: num(l.quantity) + 1 } : l);
       }
-      return [...prev, { productId: p.id, quantity: 1, unitPrice: priceFor(p, posForm.customerId), discount: '' }];
+      return [...prev, { productId: p.id, quantity: 1, unitPrice: priceFor(p, posForm.customerName), discount: '' }];
     });
   }
 
   function openPos() {
     setPosCart([]);
     setPosSearch('');
+    setEditCredit(null);
     setPosForm({
-      customerId: customers[0]?.id || '',
-      warehouseId: warehouses[0]?.id || '',
+      customerName: WALK_IN_NAME,
+      warehouseId: warehouses.length === 1 ? warehouses[0].id : '',
       payments: [{ methodId: methods.find((method) => method.kind === 'IMMEDIATE')?.id || methods[0]?.id || '', amount: '' }],
     });
     setPosOpen(true);
@@ -267,8 +372,11 @@ export function SalesPage() {
   async function save() {
     setTriedSave(true);
     if (formErrors.length) return;
+    setSaving(true);
+    try {
+    const customerId = await resolveCustomer(form.customerName);
     const payload = {
-      customerId: form.customerId,
+      customerId,
       warehouseId: form.warehouseId,
       discount: num(form.discount),
       taxRate: num(form.tax),
@@ -283,8 +391,6 @@ export function SalesPage() {
         discount: num(l.discount),
       })),
     };
-    setSaving(true);
-    try {
       await api(editingId ? `/sales/${editingId}` : '/sales', {
         method: editingId ? 'PATCH' : 'POST',
         body: JSON.stringify(payload),
@@ -294,10 +400,12 @@ export function SalesPage() {
       setOpen(false);
       setTriedSave(false);
       setForm({
-        customerId: '', warehouseId: '', discount: '', tax: '', payments: [emptyPart()], notes: '', confirm: true,
+        customerName: WALK_IN_NAME, warehouseId: '', discount: '', tax: '', payments: [emptyPart()], notes: '', confirm: true,
       });
       setLines([emptyLine()]);
+      setEditCredit(null);
       load();
+      loadStock(form.warehouseId);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'تعذر حفظ الفاتورة');
     } finally {
@@ -331,8 +439,13 @@ export function SalesPage() {
   async function editInvoice(inv: Invoice) {
     setEditingId(inv.id);
     setTriedSave(false);
+    const credit: Record<string, number> = {};
+    if (inv.status !== 'DRAFT') {
+      inv.lines.forEach((l) => { credit[l.productId] = (credit[l.productId] || 0) + l.quantity; });
+    }
+    setEditCredit({ warehouseId: inv.warehouse.id, qty: credit, posted: inv.status !== 'DRAFT' });
     setForm({
-      customerId: inv.customer.id,
+      customerName: inv.customer.name,
       warehouseId: inv.warehouse.id,
       discount: inv.discount,
       tax: inv.taxRate || 0,
@@ -388,7 +501,16 @@ export function SalesPage() {
     const code = posSearch.trim();
     if (!code) return;
     try {
+      if (!posForm.warehouseId) {
+        toast.error('اختر المخزن أولاً');
+        return;
+      }
       const product = await api<Product>(`/products/barcode/${encodeURIComponent(code)}`);
+      const onHand = availableQty(product.id, posForm.warehouseId);
+      if (onHand <= 0) {
+        toast.error('الصنف مش موجود في المخزن ده');
+        return;
+      }
       addPosProduct(product);
       setPosSearch('');
     } catch {
@@ -406,10 +528,24 @@ export function SalesPage() {
       : (posForm.payments[0]?.methodId && posLinesTotal > 0
         ? [{ methodId: posForm.payments[0].methodId, amount: Math.round(posLinesTotal * 100) / 100 }]
         : []);
+    if (posForm.customerName.trim().length < 2) {
+      toast.error('اكتب اسم العميل');
+      return;
+    }
+    if (!posForm.warehouseId) {
+      toast.error('اختر المخزن');
+      return;
+    }
+    if (posCart.some((l) => l.productId && num(l.quantity) > availableQty(l.productId, posForm.warehouseId) + 0.0001)) {
+      toast.error('الكمية أكبر من المتاح في المخزن');
+      return;
+    }
+    try {
+    const customerId = await resolveCustomer(posForm.customerName);
     await api('/sales', {
       method: 'POST',
       body: JSON.stringify({
-        customerId: posForm.customerId,
+        customerId,
         warehouseId: posForm.warehouseId,
         discount: 0,
         taxRate: 0,
@@ -426,13 +562,18 @@ export function SalesPage() {
     });
     setPosOpen(false);
     load();
+    loadStock(posForm.warehouseId);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'تعذر إتمام البيع');
+    }
   }
 
   function openInvoiceForm() {
     setEditingId(null);
     setTriedSave(false);
+    setEditCredit(null);
     setForm({
-      customerId: '', warehouseId: warehouses.length === 1 ? warehouses[0].id : '', discount: '', tax: '', payments: [emptyPart()], notes: '', confirm: true,
+      customerName: WALK_IN_NAME, warehouseId: warehouses.length === 1 ? warehouses[0].id : '', discount: '', tax: '', payments: [emptyPart()], notes: '', confirm: true,
     });
     setLines([emptyLine()]);
     setOpen(true);
@@ -681,19 +822,26 @@ export function SalesPage() {
         <EditorSection title="بيانات الفاتورة">
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <Label>العميل</Label>
-              <Select className={triedSave && !form.customerId ? 'border-rose-300' : ''} value={form.customerId} onChange={(e) => setForm({ ...form, customerId: e.target.value })}>
-                <option value="">اختر العميل</option>
-                {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </Select>
-              {form.customerId && customers.find((c) => c.id === form.customerId)?.priceList === 'WHOLESALE' && <p className="mt-1 text-xs font-semibold text-brand-700">عميل جملة: الأسعار من قائمة الجملة</p>}
-            </div>
-            <div>
               <Label>المخزن</Label>
-              <Select className={triedSave && !form.warehouseId ? 'border-rose-300' : ''} value={form.warehouseId} onChange={(e) => setForm({ ...form, warehouseId: e.target.value })}>
-                <option value="">اختر المخزن</option>
+              <Select className={triedSave && !form.warehouseId ? 'border-rose-300' : ''} value={form.warehouseId} onChange={(e) => {
+                const warehouseId = e.target.value;
+                setForm({ ...form, warehouseId });
+                if (warehouseId !== form.warehouseId) setLines([emptyLine()]);
+              }}>
+                <option value="">اختر المخزن أولاً</option>
                 {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
               </Select>
+            </div>
+            <div>
+              <Label>العميل</Label>
+              <CustomerPicker
+                customers={customers}
+                value={form.customerName}
+                invalid={triedSave && form.customerName.trim().length < 2}
+                onChange={(customerName) => setForm({ ...form, customerName })}
+              />
+              <p className="mt-1 text-xs text-muted">العميل السريع موجود تلقائيًا. لو كتبت اسم مش متسجل هيتسجل لوحده.</p>
+              {selectedCustomer?.priceList === 'WHOLESALE' && <p className="mt-1 text-xs font-semibold text-brand-700">عميل جملة: الأسعار من قائمة الجملة</p>}
             </div>
           </div>
         </EditorSection>
@@ -712,9 +860,11 @@ export function SalesPage() {
                 <div className="grid gap-2 sm:grid-cols-12">
                   <div className="sm:col-span-6">
                     <Label>الصنف</Label>
-                    <Select value={l.productId} onChange={(e) => updateLine(i, { productId: e.target.value })}>
-                      <option value="">اختر الصنف</option>
-                      {products.map((p) => <option key={p.id} value={p.id}>{p.sku} — {p.name}</option>)}
+                    <Select value={l.productId} disabled={!form.warehouseId} onChange={(e) => updateLine(i, { productId: e.target.value })}>
+                      <option value="">{form.warehouseId ? 'اختر الصنف' : 'اختر المخزن أولاً'}</option>
+                      {productsForSale(form.warehouseId, lines.map((line) => line.productId)).map((p) => (
+                        <option key={p.id} value={p.id}>{p.sku} — {p.name} (متاح {availableQty(p.id, form.warehouseId)})</option>
+                      ))}
                     </Select>
                   </div>
                   <div className="sm:col-span-2">
@@ -754,6 +904,13 @@ export function SalesPage() {
           </div>
         <div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[1fr_22rem]">
           <div className="flex min-h-0 flex-col">
+            <div className="mb-3 max-w-xs">
+              <Label>المخزن</Label>
+              <Select value={posForm.warehouseId} onChange={(e) => { setPosForm({ ...posForm, warehouseId: e.target.value }); setPosCart([]); }}>
+                <option value="">اختر المخزن أولاً</option>
+                {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+              </Select>
+            </div>
             <Input
               value={posSearch}
               onChange={(e) => setPosSearch(e.target.value)}
@@ -761,6 +918,8 @@ export function SalesPage() {
               placeholder="اسم أو كود أو باركود ثم Enter"
             />
             <div className="mt-3 grid flex-1 auto-rows-max grid-cols-2 gap-3 overflow-y-auto sm:grid-cols-3 xl:grid-cols-4">
+              {!posForm.warehouseId && <div className="col-span-full"><Empty text="اختر المخزن عشان تظهر البضاعة الموجودة فيه" /></div>}
+              {posForm.warehouseId && posProducts.length === 0 && <div className="col-span-full"><Empty text="مفيش بضاعة متاحة في المخزن ده" /></div>}
               {posProducts.map((p) => (
                 <button
                   key={p.id}
@@ -773,8 +932,8 @@ export function SalesPage() {
                   </div>
                   <div className="px-3 py-2">
                     <div className="truncate text-sm font-bold">{p.name}</div>
-                    <div className="text-xs text-muted">{p.sku}</div>
-                    <div className="mt-1 text-sm font-semibold text-brand-800">{formatMoney(p.salePrice)}</div>
+                    <div className="text-xs text-muted">{p.sku} · متاح {availableQty(p.id, posForm.warehouseId)}</div>
+                    <div className="mt-1 text-sm font-semibold text-brand-800">{formatMoney(priceFor(p, posForm.customerName))}</div>
                   </div>
                 </button>
               ))}
@@ -808,17 +967,7 @@ export function SalesPage() {
             )}
             <div>
               <Label>العميل</Label>
-              <Select value={posForm.customerId} onChange={(e) => setPosForm({ ...posForm, customerId: e.target.value })}>
-                <option value="">اختر العميل</option>
-                {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </Select>
-            </div>
-            <div>
-              <Label>المخزن</Label>
-              <Select value={posForm.warehouseId} onChange={(e) => setPosForm({ ...posForm, warehouseId: e.target.value })}>
-                <option value="">اختر المخزن</option>
-                {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-              </Select>
+              <CustomerPicker customers={customers} value={posForm.customerName} onChange={(customerName) => setPosForm({ ...posForm, customerName })} />
             </div>
             <TenderEditor methods={methods} parts={posForm.payments} onChange={(payments) => setPosForm({ ...posForm, payments })} />
             <p className="text-[11px] text-slate-500">لو الجزء الأول فاضي ومختار طريقة، يتسدد إجمالي السلة بالطريقة دي.</p>

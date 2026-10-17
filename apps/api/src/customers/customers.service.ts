@@ -1,10 +1,36 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { PriceList } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
+export const WALK_IN_CODE = 'WALKIN';
+export const WALK_IN_NAME = 'عميل سريع';
+
 @Injectable()
-export class CustomersService {
+export class CustomersService implements OnModuleInit {
   constructor(private prisma: PrismaService) {}
+
+  async onModuleInit() {
+    await this.ensureWalkIn().catch(() => undefined);
+  }
+
+  async ensureWalkIn() {
+    const named = await this.prisma.customer.findFirst({ where: { name: WALK_IN_NAME } });
+    if (named) return named;
+    return this.prisma.customer.upsert({
+      where: { code: WALK_IN_CODE },
+      create: { code: WALK_IN_CODE, name: WALK_IN_NAME, notes: 'عميل نقدي يشتري مرة ويمشي' },
+      update: {},
+    });
+  }
+
+  async ensureByName(name: string) {
+    const trimmed = name.trim();
+    if (trimmed.length < 2) throw new BadRequestException('اسم العميل قصير');
+    const existing = await this.prisma.customer.findFirst({ where: { name: trimmed } });
+    if (existing) return existing;
+    const code = `C${Date.now().toString(36).toUpperCase()}`;
+    return this.prisma.customer.create({ data: { code, name: trimmed } });
+  }
 
   findAll(search?: string) {
     return this.prisma.customer.findMany({

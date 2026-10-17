@@ -4,6 +4,10 @@ import { PriceList, Role } from '@prisma/client';
 import { CustomersService } from './customers.service';
 import { Roles } from '../common/guards';
 
+class CustomerNameDto {
+  @IsString() name!: string;
+}
+
 class CustomerDto {
   @IsString() code!: string;
   @IsString() name!: string;
@@ -60,6 +64,12 @@ export class CustomersController {
   @Roles(Role.ADMIN, Role.ACCOUNTANT, Role.SALES)
   setPrices(@Param('id') id: string, @Body() body: { prices: { productId: string; price: number }[] }) {
     return this.service.setPrices(id, body.prices || []);
+  }
+
+  @Post('by-name')
+  @Roles(Role.ADMIN, Role.ACCOUNTANT, Role.SALES)
+  byName(@Body() dto: CustomerNameDto) {
+    return this.service.ensureByName(dto.name);
   }
 
   @Post('bulk')

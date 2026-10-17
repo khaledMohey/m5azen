@@ -79,6 +79,12 @@ async function main() {
     update: {},
   });
 
+  await prisma.customer.upsert({
+    where: { code: 'WALKIN' },
+    create: { code: 'WALKIN', name: 'عميل سريع', notes: 'عميل نقدي يشتري مرة ويمشي' },
+    update: {},
+  });
+
   const product = await prisma.product.upsert({
     where: { sku: 'P001' },
     create: {
