@@ -39,15 +39,16 @@ export function FinancePage() {
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [accounts, setAccounts] = useState<{ id: string; name: string }[]>([]);
+  const [methods, setMethods] = useState<{ id: string; name: string; kind: 'IMMEDIATE' | 'CHECK' }[]>([]);
+  const [settleMethod, setSettleMethod] = useState<Record<string, string>>({});
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [checks, setChecks] = useState<Check[]>([]);
   const [ledgerAccounts, setLedgerAccounts] = useState<LedgerAccount[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [catName, setCatName] = useState('');
-  const [expense, setExpense] = useState({ categoryId: '', accountId: '', amount: '' as number | '', notes: '' });
-  const [checkForm, setCheckForm] = useState({ direction: 'IN', checkNumber: '', bankName: '', amount: '' as number | '', dueDate: '', accountId: '' });
+  const [expense, setExpense] = useState({ categoryId: '', methodId: '', amount: '' as number | '', notes: '' });
+  const [checkForm, setCheckForm] = useState({ direction: 'IN', checkNumber: '', bankName: '', amount: '' as number | '', dueDate: '' });
   const [journal, setJournal] = useState({ description: '', accountId: '', debit: '' as number | '', credit: '' as number | '', accountId2: '', debit2: '' as number | '', credit2: '' as number | '' });
   const [checkFilter, setCheckFilter] = useState<'ALL' | 'PENDING' | 'IN' | 'OUT'>('ALL');
 
@@ -55,14 +56,14 @@ export function FinancePage() {
     setLoadError('');
     try {
       const [a, cats, ex, ch, la, en] = await Promise.all([
-        api<{ id: string; name: string }[]>('/cash/accounts'),
+        api<{ id: string; name: string; kind: 'IMMEDIATE' | 'CHECK' }[]>('/cash/methods'),
         api<{ id: string; name: string }[]>('/finance/expense-categories'),
         api<Expense[]>('/finance/expenses'),
         api<Check[]>('/finance/checks'),
         api<LedgerAccount[]>('/ledger/accounts'),
         api<Entry[]>('/ledger/entries'),
       ]);
-      setAccounts(a);
+      setMethods(a);
       setCategories(cats);
       setExpenses(ex);
       setChecks(ch);
@@ -141,14 +142,14 @@ export function FinancePage() {
         <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
           <div className="space-y-4">
             <Card>
-              <CardHeader title="تسجيل مصروف" subtitle="يُخصم من الخزنة المختارة فورًا" icon={Plus} />
+              <CardHeader title="تسجيل مصروف" subtitle="يُخصم من طريقة الدفع فورًا" icon={Plus} />
               <form
                 className="space-y-3"
                 onSubmit={async (e) => {
                   e.preventDefault();
-                  if (!expense.categoryId || !expense.accountId) return toast.error('اختر البند والخزنة');
+                  if (!expense.categoryId || !expense.methodId) return toast.error('اختر البند وطريقة الدفع');
                   if (num(expense.amount) <= 0) return toast.error('أدخل مبلغًا أكبر من صفر');
-                  const ok = await run(() => api('/finance/expenses', { method: 'POST', body: JSON.stringify({ ...expense, amount: num(expense.amount) }) }), 'تم تسجيل المصروف');
+                  const ok = await run(() => api('/finance/expenses', { method: 'POST', body: JSON.stringify({ categoryId: expense.categoryId, methodId: expense.methodId, amount: num(expense.amount), notes: expense.notes || undefined }) }), 'تم تسجيل المصروف');
                   if (ok) setExpense({ ...expense, amount: '', notes: '' });
                 }}
               >
@@ -160,10 +161,10 @@ export function FinancePage() {
                   </Select>
                 </div>
                 <div>
-                  <Label>الخزنة</Label>
-                  <Select value={expense.accountId} onChange={(e) => setExpense({ ...expense, accountId: e.target.value })}>
+                  <Label>طريقة الدفع</Label>
+                  <Select value={expense.methodId} onChange={(e) => setExpense({ ...expense, methodId: e.target.value })}>
                     <option value="">اختر</option>
-                    {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    {methods.filter((method) => method.kind === 'IMMEDIATE').map((method) => <option key={method.id} value={method.id}>{method.name}</option>)}
                   </Select>
                 </div>
                 <div><Label>المبلغ</Label><NumberInput value={expense.amount} onValueChange={(v) => setExpense({ ...expense, amount: v })} /></div>
@@ -248,13 +249,6 @@ export function FinancePage() {
                 <div><Label>المبلغ</Label><NumberInput value={checkForm.amount} onValueChange={(v) => setCheckForm({ ...checkForm, amount: v })} /></div>
                 <div><Label>الاستحقاق</Label><Input type="date" value={checkForm.dueDate} onChange={(e) => setCheckForm({ ...checkForm, dueDate: e.target.value })} /></div>
               </div>
-              <div>
-                <Label>حساب التحصيل أو الصرف</Label>
-                <Select value={checkForm.accountId} onChange={(e) => setCheckForm({ ...checkForm, accountId: e.target.value })}>
-                  <option value="">عند تغيير الحالة</option>
-                  {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </Select>
-              </div>
               <Button type="submit" className="w-full" disabled={busy}>تسجيل الشيك</Button>
             </form>
           </Card>
@@ -291,11 +285,19 @@ export function FinancePage() {
                         <Td><Badge tone={st.tone}>{st.label}</Badge></Td>
                         <Td>
                           {row.status === 'PENDING' && (
-                            <div className="flex gap-1.5">
-                              <Button size="sm" variant="soft" disabled={busy} onClick={() => run(() => api(`/finance/checks/${row.id}`, {
-                                method: 'PATCH',
-                                body: JSON.stringify({ status: 'CLEARED', accountId: checkForm.accountId || undefined }),
-                              }), row.direction === 'IN' ? 'تم تحصيل الشيك' : 'تم صرف الشيك')}>{row.direction === 'IN' ? 'تحصيل' : 'صرف'}</Button>
+                            <div className="flex items-center gap-1.5">
+                              <Select value={settleMethod[row.id] || ''} onChange={(e) => setSettleMethod({ ...settleMethod, [row.id]: e.target.value })}>
+                                <option value="">طريقة التحصيل</option>
+                                {methods.filter((method) => method.kind === 'IMMEDIATE').map((method) => <option key={method.id} value={method.id}>{method.name}</option>)}
+                              </Select>
+                              <Button size="sm" variant="soft" disabled={busy} onClick={() => {
+                                const methodId = settleMethod[row.id];
+                                if (!methodId) return toast.error('اختر طريقة الدفع اللي هيدخل عليها الشيك');
+                                return run(() => api(`/finance/checks/${row.id}`, {
+                                  method: 'PATCH',
+                                  body: JSON.stringify({ status: 'CLEARED', methodId }),
+                                }), row.direction === 'IN' ? 'تم تحصيل الشيك' : 'تم صرف الشيك');
+                              }}>{row.direction === 'IN' ? 'تحصيل' : 'صرف'}</Button>
                               <Button size="sm" variant="ghost" disabled={busy} onClick={async () => {
                                 if (!(await confirm({ title: 'تسجيل شيك مرتد', message: `هل تريد تسجيل الشيك ${row.checkNumber} كمرتد؟`, confirmLabel: 'مرتد', danger: true }))) return;
                                 await run(() => api(`/finance/checks/${row.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'BOUNCED' }) }), 'تم تسجيل الشيك كمرتد');

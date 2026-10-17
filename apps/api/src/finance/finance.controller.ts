@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Req } from '@nestjs/common';
 import { IsEnum, IsNumber, IsOptional, IsString } from 'class-validator';
-import { CheckDirection, CheckStatus, PaymentMethod, Role } from '@prisma/client';
+import { CheckDirection, CheckStatus, Role } from '@prisma/client';
 import { Roles } from '../common/guards';
 import { FinanceService } from './finance.service';
 
@@ -17,10 +17,11 @@ class CloseShiftDto {
 
 class ExpenseDto {
   @IsString() categoryId!: string;
-  @IsString() accountId!: string;
+  @IsOptional() @IsString() accountId?: string;
+  @IsOptional() @IsString() methodId?: string;
   @IsNumber() amount!: number;
   @IsOptional() @IsString() expenseDate?: string;
-  @IsOptional() @IsEnum(PaymentMethod) paymentMethod?: PaymentMethod;
+  @IsOptional() @IsString() paymentMethod?: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsString() shiftId?: string;
 }
@@ -98,7 +99,7 @@ export class FinanceController {
 
   @Patch('checks/:id')
   @Roles(Role.ADMIN, Role.ACCOUNTANT)
-  setCheck(@Param('id') id: string, @Body() body: { status: CheckStatus; accountId?: string }) {
-    return this.service.setCheckStatus(id, body.status, body.accountId);
+  setCheck(@Param('id') id: string, @Body() body: { status: CheckStatus; accountId?: string; methodId?: string }) {
+    return this.service.setCheckStatus(id, body.status, body.methodId || body.accountId);
   }
 }

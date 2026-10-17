@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { ArrowLeftRight, Boxes, Coins, Eye, PackageCheck, PackageX, Pencil, Printer, Trash2 } from 'lucide-react';
 import { api, formatDate, formatMoney } from '../lib/api';
 import { useConfirm, useToast } from '../lib/feedback';
@@ -68,6 +69,7 @@ const MOV_LABELS: Record<string, string> = {
 export function StockPage() {
   const confirm = useConfirm();
   const toast = useToast();
+  const [params, setParams] = useSearchParams();
   const [tab, setTab] = useState<'balances' | 'movements'>('balances');
   const [data, setData] = useState<{ items: StockItem[]; grandTotal: number; totalQty: number }>({
     items: [], grandTotal: 0, totalQty: 0,
@@ -75,7 +77,7 @@ export function StockPage() {
   const [movements, setMovements] = useState<Movement[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
-  const [warehouseId, setWarehouseId] = useState('');
+  const [warehouseId, setWarehouseId] = useState(() => params.get('warehouse') || '');
   const [search, setSearch] = useState('');
   const [transferOpen, setTransferOpen] = useState(false);
   const [countOpen, setCountOpen] = useState(false);
@@ -298,7 +300,14 @@ export function StockPage() {
           placeholder="بحث صنف / كود / مخزن..."
           className="!w-72 max-w-full"
         />
-        <Select className="!w-52" value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)}>
+        <Select className="!w-52" value={warehouseId} onChange={(e) => {
+          const id = e.target.value;
+          setWarehouseId(id);
+          const next = new URLSearchParams(params);
+          if (id) next.set('warehouse', id);
+          else next.delete('warehouse');
+          setParams(next, { replace: true });
+        }}>
           <option value="">كل المخازن</option>
           {warehouses.map((w) => (
             <option key={w.id} value={w.id}>{w.name}</option>

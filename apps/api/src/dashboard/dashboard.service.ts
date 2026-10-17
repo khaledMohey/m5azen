@@ -16,6 +16,7 @@ export class DashboardService {
       salesToday,
       purchasesToday,
       cashAccounts,
+      payMethods,
       lowStock,
       recentSales,
       recentPurchases,
@@ -41,6 +42,7 @@ export class DashboardService {
         _count: true,
       }),
       this.prisma.cashAccount.findMany({ where: { isActive: true } }),
+      this.prisma.payMethod.findMany({ where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }] }),
       this.prisma.$queryRawUnsafe<
         { id: string; sku: string; name: string; minStock: number; quantity: number; warehouseName: string }[]
       >(`
@@ -106,6 +108,7 @@ export class DashboardService {
       purchasesToday: { total: purchasesToday._sum.total || 0, count: purchasesToday._count },
       cashBalance,
       cashAccounts,
+      payMethods,
       lowStock,
       recentSales,
       recentPurchases,

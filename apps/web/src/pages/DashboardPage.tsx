@@ -16,6 +16,7 @@ type Dash = {
   purchasesToday: { total: number; count: number };
   cashBalance: number;
   cashAccounts?: { id: string; code: string; name: string; balance: number; accountType?: string }[];
+  payMethods?: { id: string; name: string; kind: string }[];
   lowStock: { name: string; quantity: number; minStock: number; warehouseName: string }[];
   recentSales: { id: string; number: string; total: number; status: string; invoiceDate: string; customer: { name: string }; createdBy?: { fullName: string } | null }[];
   recentPurchases: { id: string; number: string; total: number; status: string; invoiceDate: string; supplier: { name: string }; createdBy?: { fullName: string } | null }[];
@@ -212,7 +213,7 @@ export function DashboardPage() {
     { label: isToday ? 'مبيعات اليوم' : 'مبيعات الفترة', value: salesTotal, money: true, sub: `${salesCount} فاتورة · ${periodHint}`, icon: ShoppingCart, chip: 'from-brand-500 to-brand-800', spark: spark14(insight.salesSeries), sparkColor: 'text-brand-600', to: '/sales' },
     { label: isToday ? 'مشتريات اليوم' : 'مشتريات الفترة', value: purchaseTotal, money: true, sub: `${purchaseCount} فاتورة · ${periodHint}`, icon: ShoppingBag, chip: 'from-sky-400 to-sky-700', spark: spark14(insight.purchaseSeries), sparkColor: 'text-sky-500', to: '/purchases' },
     finance
-      ? { label: 'رصيد الخزنة والبنوك', value: data.cashBalance, money: true, sub: `${data.cashAccounts?.length || 0} حسابات نشطة`, icon: Wallet, chip: 'from-amber-400 to-amber-600', spark: [], sparkColor: '', to: '/cash' }
+      ? { label: 'رصيد طرق الدفع', value: data.cashBalance, money: true, sub: `${data.cashAccounts?.length || 0} طريقة فورية`, icon: Wallet, chip: 'from-amber-400 to-amber-600', spark: [], sparkColor: '', to: '/cash' }
       : { label: 'الأصناف', value: data.productCount ?? 0, money: false, sub: `${data.warehouseCount ?? 0} مخزن`, icon: Boxes, chip: 'from-amber-400 to-amber-600', spark: [], sparkColor: '', to: '/products' },
     { label: 'العملاء', value: data.customersCount, money: false, sub: `${data.suppliersCount} مورد نشط · فواتير يومية`, icon: Users, chip: 'from-violet-400 to-violet-700', spark: spark14(insight.countSeries), sparkColor: 'text-violet-500', to: '/customers' },
   ];
@@ -422,10 +423,10 @@ export function DashboardPage() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
-        {finance && (data.cashAccounts?.length || 0) > 0 && (
+        {finance && ((data.cashAccounts?.length || 0) > 0 || (data.payMethods?.some((method) => method.kind === 'CHECK'))) && (
           <Card>
             <div className="mb-4 flex items-center justify-between">
-              <div className="text-base font-extrabold">الخزن والحسابات البنكية</div>
+              <div className="text-base font-extrabold">طرق الدفع</div>
               <Link to="/cash" className="text-xs font-bold text-brand-700">الخزنة</Link>
             </div>
             <div className="space-y-3">
@@ -443,6 +444,12 @@ export function DashboardPage() {
                   </div>
                 );
               })}
+              {(data.payMethods || []).filter((method) => method.kind === 'CHECK').map((method) => (
+                <div key={method.id} className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">
+                  {method.name}
+                  <div className="mt-1 text-xs font-semibold text-amber-700">شيك — الرصيد يدخل لما تحصّله</div>
+                </div>
+              ))}
             </div>
           </Card>
         )}

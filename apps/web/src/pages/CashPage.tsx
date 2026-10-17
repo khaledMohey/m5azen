@@ -9,16 +9,10 @@ import {
   Badge, Button, Card, CardHeader, Empty, Input, Label, Modal, NumberInput, PageHeader, SearchBox, Select, StatCard, StatGrid, Table, Td, Th,
 } from '../components/ui';
 
-const PAYMENT_METHODS = [
-  { value: 'CASH', label: 'نقدي' },
-  { value: 'BANK_TRANSFER', label: 'تحويل بنكي' },
-  { value: 'CHECK', label: 'شيك' },
-  { value: 'CARD', label: 'بطاقة' },
-  { value: 'INSTAPAY', label: 'إنستاباي' },
-  { value: 'OTHER', label: 'أخرى' },
-] as const;
-
-const METHOD_MAP = Object.fromEntries(PAYMENT_METHODS.map((m) => [m.value, m.label]));
+type PayMethod = {
+  id: string; code: string; name: string; kind: 'IMMEDIATE' | 'CHECK';
+  cashAccountId?: string | null; cashAccount?: { balance: number } | null;
+};
 
 type Account = { id: string; code: string; name: string; balance: number; accountType?: string };
 type Tx = {
@@ -33,13 +27,13 @@ type OpenInvoice = {
 type Receipt = {
   id: string; number: string; amount: number; paymentMethod: string; receivedAt: string;
   referenceNo?: string | null; note?: string | null;
-  customer: { name: string }; cashAccount: { name: string };
+  customer: { name: string }; cashAccount?: { name: string } | null;
   salesInvoice?: { number: string } | null;
 };
 type Payment = {
   id: string; number: string; amount: number; paymentMethod: string; paidAt: string;
   referenceNo?: string | null; note?: string | null;
-  supplier: { name: string }; cashAccount: { name: string };
+  supplier: { name: string }; cashAccount?: { name: string } | null;
   purchaseInvoice?: { number: string } | null;
 };
 
@@ -62,6 +56,7 @@ function dueBox(rows: OpenInvoice[]) {
 export function CashPage() {
   const [tab, setTab] = useState<Tab>('overview');
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [methods, setMethods] = useState<PayMethod[]>([]);
   const [txs, setTxs] = useState<Tx[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
@@ -74,25 +69,26 @@ export function CashPage() {
   const [accOpen, setAccOpen] = useState(false);
 
   const [txForm, setTxForm] = useState({
-    accountId: '', direction: 'IN', amount: '' as number | '', description: '', paymentMethod: 'CASH',
+    accountId: '', direction: 'IN', amount: '' as number | '', description: '',
   });
   const [receiptForm, setReceiptForm] = useState({
-    customerId: '', cashAccountId: '', amount: '' as number | '', salesInvoiceId: '',
-    paymentMethod: 'CASH', referenceNo: '', note: '',
+    customerId: '', methodId: '', amount: '' as number | '', salesInvoiceId: '',
+    referenceNo: '', note: '',
   });
   const [paymentForm, setPaymentForm] = useState({
-    supplierId: '', cashAccountId: '', amount: '' as number | '', purchaseInvoiceId: '',
-    paymentMethod: 'CASH', referenceNo: '', note: '',
+    supplierId: '', methodId: '', amount: '' as number | '', purchaseInvoiceId: '',
+    referenceNo: '', note: '',
   });
-  const [accForm, setAccForm] = useState({ code: '', name: '', balance: '' as number | '', accountType: 'CASH' });
+  const [accForm, setAccForm] = useState({ code: '', name: '', balance: '' as number | '', kind: 'IMMEDIATE', accountType: 'CASH' });
 
   const [customerSummary, setCustomerSummary] = useState<{ balance: number; openInvoices: OpenInvoice[] } | null>(null);
   const [supplierSummary, setSupplierSummary] = useState<{ balance: number; openInvoices: OpenInvoice[] } | null>(null);
   const [search, setSearch] = useState('');
 
   async function load() {
-    const [a, t, c, s, r, p] = await Promise.all([
+    const [a, m, t, c, s, r, p] = await Promise.all([
       api<Account[]>('/cash/accounts'),
+      api<PayMethod[]>('/cash/methods'),
       api<Tx[]>('/cash/transactions'),
       api<Party[]>('/customers'),
       api<Party[]>('/suppliers'),
@@ -100,6 +96,7 @@ export function CashPage() {
       api<Payment[]>('/cash/payments'),
     ]);
     setAccounts(a);
+    setMethods(m);
     setTxs(t);
     setCustomers(c);
     setSuppliers(s);
@@ -113,7 +110,7 @@ export function CashPage() {
     const q = search.trim().toLowerCase();
     if (!q) return receipts;
     return receipts.filter((r) =>
-      [r.number, r.customer.name, r.cashAccount.name, r.note || ''].some((x) => x.toLowerCase().includes(q)),
+      [r.number, r.customer.name, r.cashAccount?.name || '', r.note || ''].some((x) => x.toLowerCase().includes(q)),
     );
   }, [receipts, search]);
 
@@ -121,7 +118,7 @@ export function CashPage() {
     const q = search.trim().toLowerCase();
     if (!q) return payments;
     return payments.filter((p) =>
-      [p.number, p.supplier.name, p.cashAccount.name, p.note || ''].some((x) => x.toLowerCase().includes(q)),
+      [p.number, p.supplier.name, p.cashAccount?.name || '', p.note || ''].some((x) => x.toLowerCase().includes(q)),
     );
   }, [payments, search]);
 
@@ -159,7 +156,7 @@ export function CashPage() {
       body: JSON.stringify({ ...txForm, amount: txForm.amount === '' ? 0 : txForm.amount }),
     });
     setTxOpen(false);
-    setTxForm({ accountId: '', direction: 'IN', amount: '', description: '', paymentMethod: 'CASH' });
+    setTxForm({ accountId: '', direction: 'IN', amount: '', description: '' });
     load();
   }
 
@@ -167,7 +164,8 @@ export function CashPage() {
     await api('/cash/receipts', {
       method: 'POST',
       body: JSON.stringify({
-        ...receiptForm,
+        customerId: receiptForm.customerId,
+        methodId: receiptForm.methodId,
         amount: receiptForm.amount === '' ? 0 : receiptForm.amount,
         salesInvoiceId: receiptForm.salesInvoiceId || undefined,
         referenceNo: receiptForm.referenceNo || undefined,
@@ -176,8 +174,8 @@ export function CashPage() {
     });
     setReceiptOpen(false);
     setReceiptForm({
-      customerId: '', cashAccountId: '', amount: '', salesInvoiceId: '',
-      paymentMethod: 'CASH', referenceNo: '', note: '',
+      customerId: '', methodId: '', amount: '', salesInvoiceId: '',
+      referenceNo: '', note: '',
     });
     setTab('receipts');
     load();
@@ -187,7 +185,8 @@ export function CashPage() {
     await api('/cash/payments', {
       method: 'POST',
       body: JSON.stringify({
-        ...paymentForm,
+        supplierId: paymentForm.supplierId,
+        methodId: paymentForm.methodId,
         amount: paymentForm.amount === '' ? 0 : paymentForm.amount,
         purchaseInvoiceId: paymentForm.purchaseInvoiceId || undefined,
         referenceNo: paymentForm.referenceNo || undefined,
@@ -196,15 +195,15 @@ export function CashPage() {
     });
     setPaymentOpen(false);
     setPaymentForm({
-      supplierId: '', cashAccountId: '', amount: '', purchaseInvoiceId: '',
-      paymentMethod: 'CASH', referenceNo: '', note: '',
+      supplierId: '', methodId: '', amount: '', purchaseInvoiceId: '',
+      referenceNo: '', note: '',
     });
     setTab('payments');
     load();
   }
 
   async function saveAccount() {
-    await api('/cash/accounts', {
+    await api('/cash/methods', {
       method: 'POST',
       body: JSON.stringify({
         ...accForm,
@@ -212,7 +211,7 @@ export function CashPage() {
       }),
     });
     setAccOpen(false);
-    setAccForm({ code: '', name: '', balance: '', accountType: 'CASH' });
+    setAccForm({ code: '', name: '', balance: '', kind: 'IMMEDIATE', accountType: 'CASH' });
     load();
   }
 
@@ -225,6 +224,8 @@ export function CashPage() {
   const inflow = txs.filter((t) => t.direction === 'IN').reduce((s, t) => s + t.amount, 0);
   const outflow = txs.filter((t) => t.direction !== 'IN').reduce((s, t) => s + t.amount, 0);
   const netFlow = inflow - outflow;
+  const methodName = (id?: string | null) => methods.find((m) => m.id === id)?.name || '—';
+  const checkMethods = methods.filter((m) => m.kind === 'CHECK');
 
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: 'overview', label: 'الحسابات', count: accounts.length },
@@ -241,7 +242,7 @@ export function CashPage() {
         actions={
           <>
             <SearchBox value={search} onChange={setSearch} placeholder="بحث في الخزنة..." />
-            <Button variant="secondary" onClick={() => setAccOpen(true)}><Plus size={16} /> حساب</Button>
+            <Button variant="secondary" onClick={() => setAccOpen(true)}><Plus size={16} /> طريقة دفع</Button>
             <Button variant="secondary" onClick={() => setReceiptOpen(true)}><ArrowDownLeft size={16} /> تحصيل</Button>
             <Button variant="secondary" onClick={() => setPaymentOpen(true)}><ArrowUpRight size={16} /> سداد</Button>
             <Button onClick={() => setTxOpen(true)}>حركة يدوية</Button>
@@ -266,6 +267,7 @@ export function CashPage() {
       </div>
 
       {tab === 'overview' && (
+        <>
         <div className="grid gap-4 lg:grid-cols-2">
           {([['الخزن النقدية', cashAccounts, Banknote, 'from-emerald-500 to-teal-800'], ['الحسابات البنكية', bankAccounts, Building2, 'from-brand-600 to-brand-950']] as const).map(([title, list, Icon, gradient]) => (
             <Card key={title}>
@@ -289,6 +291,17 @@ export function CashPage() {
             </Card>
           ))}
         </div>
+        {checkMethods.length > 0 && (
+          <Card className="mt-4">
+            <CardHeader title="طرق الشيك" subtitle="المبلغ مش بيدخل أي حساب غير لما تحصّل الشيك وتختار طريقة الدفع ساعتها" />
+            <div className="flex flex-wrap gap-2 p-4">
+              {checkMethods.map((m) => (
+                <Badge key={m.id} tone="amber">{m.name}</Badge>
+              ))}
+            </div>
+          </Card>
+        )}
+        </>
       )}
 
       {tab === 'receipts' && (
@@ -308,8 +321,8 @@ export function CashPage() {
                     <Td><span className="font-mono text-xs font-bold text-brand-700" dir="ltr">{r.number}</span></Td>
                     <Td className="font-bold text-slate-900">{r.customer.name}</Td>
                     <Td><span className="font-mono text-xs text-slate-500" dir="ltr">{r.salesInvoice?.number || '—'}</span></Td>
-                    <Td className="text-slate-600">{r.cashAccount.name}</Td>
-                    <Td><Badge tone="sky">{METHOD_MAP[r.paymentMethod] || r.paymentMethod}</Badge></Td>
+                    <Td className="text-slate-600">{r.cashAccount?.name || 'عند التحصيل'}</Td>
+                    <Td><Badge tone="sky">{methodName(r.paymentMethod)}</Badge></Td>
                     <Td className="whitespace-nowrap font-extrabold text-emerald-700">+ {formatMoney(r.amount)}</Td>
                     <Td className="whitespace-nowrap text-slate-500">{formatDate(r.receivedAt)}</Td>
                   </tr>
@@ -337,8 +350,8 @@ export function CashPage() {
                     <Td><span className="font-mono text-xs font-bold text-brand-700" dir="ltr">{p.number}</span></Td>
                     <Td className="font-bold text-slate-900">{p.supplier.name}</Td>
                     <Td><span className="font-mono text-xs text-slate-500" dir="ltr">{p.purchaseInvoice?.number || '—'}</span></Td>
-                    <Td className="text-slate-600">{p.cashAccount.name}</Td>
-                    <Td><Badge tone="sky">{METHOD_MAP[p.paymentMethod] || p.paymentMethod}</Badge></Td>
+                    <Td className="text-slate-600">{p.cashAccount?.name || 'عند الصرف'}</Td>
+                    <Td><Badge tone="sky">{methodName(p.paymentMethod)}</Badge></Td>
                     <Td className="whitespace-nowrap font-extrabold text-rose-600">− {formatMoney(p.amount)}</Td>
                     <Td className="whitespace-nowrap text-slate-500">{formatDate(p.paidAt)}</Td>
                   </tr>
@@ -365,7 +378,7 @@ export function CashPage() {
                     <Td className="whitespace-nowrap text-slate-500">{formatDate(t.createdAt)}</Td>
                     <Td className="font-semibold text-slate-700">{t.account.name}</Td>
                     <Td className="max-w-md truncate text-slate-600" >{t.description}</Td>
-                    <Td className="text-muted">{METHOD_MAP[t.paymentMethod || ''] || '—'}</Td>
+                    <Td className="text-muted">{methodName(t.paymentMethod)}</Td>
                     <Td><Badge tone={t.direction === 'IN' ? 'emerald' : 'rose'}>{t.direction === 'IN' ? 'وارد' : 'صادر'}</Badge></Td>
                     <Td className={`whitespace-nowrap font-extrabold ${t.direction === 'IN' ? 'text-emerald-700' : 'text-rose-600'}`}>{t.direction === 'IN' ? '+' : '−'} {formatMoney(t.amount)}</Td>
                   </tr>
@@ -433,20 +446,12 @@ export function CashPage() {
             </div>
           )}
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <Label>حساب الخزنة / البنك</Label>
-              <Select value={receiptForm.cashAccountId} onChange={(e) => setReceiptForm({ ...receiptForm, cashAccountId: e.target.value })}>
-                <option value="">اختر</option>
-                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({formatMoney(a.balance)})</option>)}
-              </Select>
-            </div>
-            <div>
-              <Label>طريقة الدفع</Label>
-              <Select value={receiptForm.paymentMethod} onChange={(e) => setReceiptForm({ ...receiptForm, paymentMethod: e.target.value })}>
-                {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-              </Select>
-            </div>
+          <div>
+            <Label>طريقة الدفع</Label>
+            <Select value={receiptForm.methodId} onChange={(e) => setReceiptForm({ ...receiptForm, methodId: e.target.value })}>
+              <option value="">اختر</option>
+              {methods.map((m) => <option key={m.id} value={m.id}>{m.name}{m.kind === 'CHECK' ? ' — يُحصَّل لاحقًا' : m.cashAccount ? ` (${formatMoney(m.cashAccount.balance)})` : ''}</option>)}
+            </Select>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
@@ -517,20 +522,12 @@ export function CashPage() {
             </div>
           )}
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <Label>حساب الخزنة / البنك</Label>
-              <Select value={paymentForm.cashAccountId} onChange={(e) => setPaymentForm({ ...paymentForm, cashAccountId: e.target.value })}>
-                <option value="">اختر</option>
-                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({formatMoney(a.balance)})</option>)}
-              </Select>
-            </div>
-            <div>
-              <Label>طريقة الدفع</Label>
-              <Select value={paymentForm.paymentMethod} onChange={(e) => setPaymentForm({ ...paymentForm, paymentMethod: e.target.value })}>
-                {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-              </Select>
-            </div>
+          <div>
+            <Label>طريقة الدفع</Label>
+            <Select value={paymentForm.methodId} onChange={(e) => setPaymentForm({ ...paymentForm, methodId: e.target.value })}>
+              <option value="">اختر</option>
+              {methods.map((m) => <option key={m.id} value={m.id}>{m.name}{m.kind === 'CHECK' ? ' — يُصرف عند التحصيل' : m.cashAccount ? ` (${formatMoney(m.cashAccount.balance)})` : ''}</option>)}
+            </Select>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
@@ -553,20 +550,12 @@ export function CashPage() {
               {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </Select>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label>النوع</Label>
-              <Select value={txForm.direction} onChange={(e) => setTxForm({ ...txForm, direction: e.target.value })}>
-                <option value="IN">وارد</option>
-                <option value="OUT">صادر</option>
-              </Select>
-            </div>
-            <div>
-              <Label>طريقة الدفع</Label>
-              <Select value={txForm.paymentMethod} onChange={(e) => setTxForm({ ...txForm, paymentMethod: e.target.value })}>
-                {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-              </Select>
-            </div>
+          <div>
+            <Label>النوع</Label>
+            <Select value={txForm.direction} onChange={(e) => setTxForm({ ...txForm, direction: e.target.value })}>
+              <option value="IN">وارد</option>
+              <option value="OUT">صادر</option>
+            </Select>
           </div>
           <div>
             <Label>المبلغ</Label>
@@ -577,21 +566,32 @@ export function CashPage() {
         </div>
       </Modal>
 
-      <Modal open={accOpen} onClose={() => setAccOpen(false)} title="حساب جديد">
+      <Modal open={accOpen} onClose={() => setAccOpen(false)} title="طريقة دفع جديدة">
         <div className="space-y-3">
           <div>
-            <Label>نوع الحساب</Label>
-            <Select value={accForm.accountType} onChange={(e) => setAccForm({ ...accForm, accountType: e.target.value })}>
-              <option value="CASH">خزنة نقدية</option>
-              <option value="BANK">حساب بنكي</option>
+            <Label>النوع</Label>
+            <Select value={accForm.kind} onChange={(e) => setAccForm({ ...accForm, kind: e.target.value })}>
+              <option value="IMMEDIATE">فوري — يدخل الحساب فورًا</option>
+              <option value="CHECK">شيك — يدخل لما تحصّله</option>
             </Select>
           </div>
-          <div><Label>كود الحساب</Label><Input value={accForm.code} onChange={(e) => setAccForm({ ...accForm, code: e.target.value })} /></div>
-          <div><Label>اسم الحساب</Label><Input value={accForm.name} onChange={(e) => setAccForm({ ...accForm, name: e.target.value })} /></div>
-          <div>
-            <Label>رصيد افتتاحي</Label>
-            <NumberInput value={accForm.balance} onValueChange={(v) => setAccForm({ ...accForm, balance: v })} />
-          </div>
+          {accForm.kind === 'IMMEDIATE' && (
+            <div>
+              <Label>نوع الحساب</Label>
+              <Select value={accForm.accountType} onChange={(e) => setAccForm({ ...accForm, accountType: e.target.value })}>
+                <option value="CASH">خزنة نقدية</option>
+                <option value="BANK">حساب بنكي</option>
+              </Select>
+            </div>
+          )}
+          <div><Label>الكود</Label><Input value={accForm.code} onChange={(e) => setAccForm({ ...accForm, code: e.target.value })} /></div>
+          <div><Label>الاسم</Label><Input value={accForm.name} onChange={(e) => setAccForm({ ...accForm, name: e.target.value })} /></div>
+          {accForm.kind === 'IMMEDIATE' && (
+            <div>
+              <Label>رصيد افتتاحي</Label>
+              <NumberInput value={accForm.balance} onValueChange={(v) => setAccForm({ ...accForm, balance: v })} />
+            </div>
+          )}
           <Button className="w-full" onClick={saveAccount}>حفظ</Button>
         </div>
       </Modal>

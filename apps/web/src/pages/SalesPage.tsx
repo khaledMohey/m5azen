@@ -5,6 +5,7 @@ import { api, formatDate, formatMoney, initialQuery, productImageUrl } from '../
 import { dueTone } from '../lib/due';
 import { DueAmount } from '../components/DueAmount';
 import { AddLineButton, EditorErrors, EditorSection, InvoiceEditor, LineCard, SummaryRow } from '../components/InvoiceEditor';
+import { TenderEditor, type PayMethodOption, type TenderPart } from '../components/TenderEditor';
 import { useConfirm, usePrompt, useToast } from '../lib/feedback';
 import { usePagedList } from '../lib/paging';
 import { useColumns } from '../lib/columns';
@@ -36,16 +37,8 @@ type Invoice = {
   receipts?: { id: string; number: string; amount: number; paymentMethod: string; receivedAt: string; note?: string | null }[];
 };
 
-const METHODS: Record<string, string> = {
-  CASH: 'نقدي',
-  BANK_TRANSFER: 'تحويل بنكي',
-  CHECK: 'شيك',
-  CARD: 'بطاقة',
-  INSTAPAY: 'إنستاباي',
-  OTHER: 'أخرى',
-};
-
 const emptyLine = (): Line => ({ productId: '', quantity: '', unitPrice: '', discount: '' });
+const emptyPart = (): TenderPart => ({ methodId: '', amount: '' });
 const num = (v: number | '') => (v === '' ? 0 : v);
 const SALE_VIEW = 'm5azen.salesView';
 type SaleFilter = 'all' | 'DRAFT' | 'CONFIRMED' | 'PARTIAL' | 'PAID' | 'CANCELLED' | 'due';
@@ -73,6 +66,7 @@ export function SalesPage() {
   const [warehouses, setWarehouses] = useState<Party[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [methods, setMethods] = useState<PayMethodOption[]>([]);
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<Invoice | null>(null);
   const [search, setSearch] = useState(initialQuery);
@@ -83,9 +77,7 @@ export function SalesPage() {
     warehouseId: '',
     discount: '' as number | '',
     tax: '' as number | '',
-    paidAmount: '' as number | '',
-    cashAccountId: '',
-    paymentMethod: 'CASH',
+    payments: [emptyPart()] as TenderPart[],
     notes: '',
     confirm: true,
   });
@@ -96,9 +88,7 @@ export function SalesPage() {
   const [posForm, setPosForm] = useState({
     customerId: '',
     warehouseId: '',
-    paidAmount: '' as number | '',
-    cashAccountId: '',
-    paymentMethod: 'CASH',
+    payments: [emptyPart()] as TenderPart[],
   });
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -108,18 +98,20 @@ export function SalesPage() {
   const [customerPrices, setCustomerPrices] = useState<Record<string, number>>({});
 
   async function load() {
-    const [inv, c, w, p, a] = await Promise.all([
+    const [inv, c, w, p, a, m] = await Promise.all([
       api<Invoice[]>('/sales'),
       api<Party[]>('/customers'),
       api<Party[]>('/warehouses'),
       api<Product[]>('/products'),
       api<Account[]>('/cash/accounts'),
+      api<PayMethodOption[]>('/cash/methods'),
     ]);
     setItems(inv);
     setCustomers(c);
     setWarehouses(w);
     setProducts(p);
     setAccounts(a);
+    setMethods(m);
     api<{ id: string; openingCash: number; account: { name: string } } | null>('/finance/shifts/current')
       .then((row) => setShift(row))
       .catch(() => setShift(null));
@@ -211,7 +203,8 @@ export function SalesPage() {
   const linesTotal = lines.reduce((s, l) => s + num(l.quantity) * num(l.unitPrice) - num(l.discount), 0);
   const taxAmount = Math.round((linesTotal - num(form.discount)) * num(form.tax) * 100) / 10000;
   const grand = linesTotal - num(form.discount) + taxAmount;
-  const remaining = Math.max(0, grand - num(form.paidAmount));
+  const paidNow = form.payments.reduce((sum, part) => sum + num(part.amount), 0);
+  const remaining = Math.max(0, grand - paidNow);
   const filledLines = lines.filter((l) => l.productId);
   const badLine = (l: Line) => !!l.productId && !(num(l.quantity) > 0);
   const formErrors = [
@@ -219,12 +212,13 @@ export function SalesPage() {
     !form.warehouseId && 'اختر المخزن',
     !filledLines.length && 'أضف صنفًا واحدًا على الأقل',
     lines.some(badLine) && 'كل بند لازم يكون له كمية أكبر من صفر',
-    num(form.paidAmount) > grand + 0.009 && 'المدفوع أكبر من إجمالي الفاتورة',
-    form.confirm && num(form.paidAmount) > 0 && !form.cashAccountId && 'اختر حساب الخزنة للمبلغ المدفوع',
+    paidNow > grand + 0.009 && 'المدفوع أكبر من إجمالي الفاتورة',
+    form.confirm && form.payments.some((part) => num(part.amount) > 0 && !part.methodId) && 'اختر طريقة الدفع لكل جزء',
   ].filter(Boolean) as string[];
 
   const posLinesTotal = posCart.reduce((s, l) => s + num(l.quantity) * num(l.unitPrice), 0);
-  const posPaid = posForm.paidAmount === '' ? posLinesTotal : num(posForm.paidAmount);
+  const posEntered = posForm.payments.reduce((sum, part) => sum + num(part.amount), 0);
+  const posPaid = posEntered > 0 ? posEntered : (posForm.payments[0]?.methodId ? posLinesTotal : 0);
   const posRemaining = Math.max(0, posLinesTotal - posPaid);
   const posProducts = products.filter((p) => {
     const q = posSearch.trim().toLowerCase();
@@ -265,9 +259,7 @@ export function SalesPage() {
     setPosForm({
       customerId: customers[0]?.id || '',
       warehouseId: warehouses[0]?.id || '',
-      paidAmount: '',
-      cashAccountId: accounts[0]?.id || '',
-      paymentMethod: 'CASH',
+      payments: [{ methodId: methods.find((method) => method.kind === 'IMMEDIATE')?.id || methods[0]?.id || '', amount: '' }],
     });
     setPosOpen(true);
   }
@@ -280,9 +272,7 @@ export function SalesPage() {
       warehouseId: form.warehouseId,
       discount: num(form.discount),
       taxRate: num(form.tax),
-      paidAmount: num(form.paidAmount),
-      cashAccountId: form.cashAccountId || undefined,
-      paymentMethod: form.paymentMethod,
+      payments: form.payments.filter((part) => num(part.amount) > 0).map((part) => ({ methodId: part.methodId, amount: num(part.amount) })),
       notes: form.notes || undefined,
       confirm: form.confirm,
       shiftId: useShift && shift ? shift.id : undefined,
@@ -304,8 +294,7 @@ export function SalesPage() {
       setOpen(false);
       setTriedSave(false);
       setForm({
-        customerId: '', warehouseId: '', discount: '', tax: '', paidAmount: '',
-        cashAccountId: '', paymentMethod: 'CASH', notes: '', confirm: true,
+        customerId: '', warehouseId: '', discount: '', tax: '', payments: [emptyPart()], notes: '', confirm: true,
       });
       setLines([emptyLine()]);
       load();
@@ -347,9 +336,9 @@ export function SalesPage() {
       warehouseId: inv.warehouse.id,
       discount: inv.discount,
       tax: inv.taxRate || 0,
-      paidAmount: inv.paidAmount,
-      cashAccountId: accounts[0]?.id || '',
-      paymentMethod: 'CASH',
+      payments: inv.receipts?.length
+        ? inv.receipts.map((receipt) => ({ methodId: receipt.paymentMethod, amount: receipt.amount }))
+        : [emptyPart()],
       notes: inv.notes || '',
       confirm: true,
     });
@@ -408,7 +397,15 @@ export function SalesPage() {
   }
 
   async function savePos() {
-    const pay = posForm.paidAmount === '' ? posLinesTotal : num(posForm.paidAmount);
+    if (posLinesTotal > 0 && posForm.payments.some((part) => num(part.amount) > 0 && !part.methodId)) {
+      toast.error('اختر طريقة الدفع لكل جزء');
+      return;
+    }
+    const payments = posEntered > 0
+      ? posForm.payments.filter((part) => num(part.amount) > 0).map((part) => ({ methodId: part.methodId, amount: num(part.amount) }))
+      : (posForm.payments[0]?.methodId && posLinesTotal > 0
+        ? [{ methodId: posForm.payments[0].methodId, amount: Math.round(posLinesTotal * 100) / 100 }]
+        : []);
     await api('/sales', {
       method: 'POST',
       body: JSON.stringify({
@@ -416,9 +413,7 @@ export function SalesPage() {
         warehouseId: posForm.warehouseId,
         discount: 0,
         taxRate: 0,
-        paidAmount: pay,
-        cashAccountId: pay > 0 ? posForm.cashAccountId : undefined,
-        paymentMethod: posForm.paymentMethod,
+        payments,
         shiftId: useShift && shift ? shift.id : undefined,
         confirm: true,
         lines: posCart.filter((l) => l.productId && num(l.quantity) > 0).map((l) => ({
@@ -437,8 +432,7 @@ export function SalesPage() {
     setEditingId(null);
     setTriedSave(false);
     setForm({
-      customerId: '', warehouseId: warehouses.length === 1 ? warehouses[0].id : '', discount: '', tax: '', paidAmount: '',
-      cashAccountId: accounts[0]?.id || '', paymentMethod: 'CASH', notes: '', confirm: true,
+      customerId: '', warehouseId: warehouses.length === 1 ? warehouses[0].id : '', discount: '', tax: '', payments: [emptyPart()], notes: '', confirm: true,
     });
     setLines([emptyLine()]);
     setOpen(true);
@@ -641,30 +635,23 @@ export function SalesPage() {
                 <NumberInput value={form.tax} onValueChange={(v) => setForm({ ...form, tax: v })} />
               </div>
             </div>
-            <div>
+            <div className="flex items-center justify-between gap-2">
               <Label>المدفوع الآن</Label>
-              <div className="flex gap-2">
-                <NumberInput value={form.paidAmount} onValueChange={(v) => setForm({ ...form, paidAmount: v })} />
-                <button type="button" className="shrink-0 rounded-xl border border-brand-200 bg-brand-50 px-3 text-xs font-bold text-brand-700 hover:bg-brand-100" onClick={() => setForm({ ...form, paidAmount: Math.round(grand * 100) / 100 })}>كامل</button>
-              </div>
+              <button
+                type="button"
+                className="shrink-0 rounded-xl border border-brand-200 bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700 hover:bg-brand-100"
+                onClick={() => setForm({
+                  ...form,
+                  payments: [{
+                    methodId: form.payments[0]?.methodId || methods.find((method) => method.kind === 'IMMEDIATE')?.id || methods[0]?.id || '',
+                    amount: Math.round(grand * 100) / 100,
+                  }],
+                })}
+              >
+                كامل
+              </button>
             </div>
-            {num(form.paidAmount) > 0 && (
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label>الخزنة / البنك</Label>
-                  <Select value={form.cashAccountId} onChange={(e) => setForm({ ...form, cashAccountId: e.target.value })}>
-                    <option value="">اختر الحساب</option>
-                    {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                  </Select>
-                </div>
-                <div>
-                  <Label>طريقة الدفع</Label>
-                  <Select value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value })}>
-                    {Object.entries(METHODS).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
-                  </Select>
-                </div>
-              </div>
-            )}
+            <TenderEditor methods={methods} parts={form.payments} onChange={(payments) => setForm({ ...form, payments })} />
             <div>
               <Label>ملاحظات</Label>
               <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="تظهر على الفاتورة" />
@@ -674,7 +661,7 @@ export function SalesPage() {
               <SummaryRow label="خصم الفاتورة" value={formatMoney(num(form.discount))} />
               <SummaryRow label={`الضريبة (${num(form.tax)}%)`} value={formatMoney(taxAmount)} />
               <SummaryRow label="الإجمالي" value={formatMoney(grand)} strong />
-              <SummaryRow label="المدفوع" value={formatMoney(num(form.paidAmount))} />
+              <SummaryRow label="المدفوع" value={formatMoney(paidNow)} />
               <div className="flex items-center justify-between rounded-xl bg-white px-3 py-2 font-bold text-slate-900">
                 <span>المتبقي</span>
                 <DueAmount date={formDueDate} remaining={remaining} />
@@ -833,27 +820,8 @@ export function SalesPage() {
                 {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
               </Select>
             </div>
-            <div>
-              <Label>المدفوع الآن (فاضي = المبلغ كامل)</Label>
-              <NumberInput value={posForm.paidAmount} onValueChange={(v) => setPosForm({ ...posForm, paidAmount: v })} />
-            </div>
-            {posPaid > 0 && (
-              <>
-                <div>
-                  <Label>حساب الخزنة</Label>
-                  <Select value={posForm.cashAccountId} onChange={(e) => setPosForm({ ...posForm, cashAccountId: e.target.value })}>
-                    <option value="">اختر الحساب</option>
-                    {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                  </Select>
-                </div>
-                <div>
-                  <Label>طريقة الدفع</Label>
-                  <Select value={posForm.paymentMethod} onChange={(e) => setPosForm({ ...posForm, paymentMethod: e.target.value })}>
-                    {Object.entries(METHODS).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
-                  </Select>
-                </div>
-              </>
-            )}
+            <TenderEditor methods={methods} parts={posForm.payments} onChange={(payments) => setPosForm({ ...posForm, payments })} />
+            <p className="text-[11px] text-slate-500">لو الجزء الأول فاضي ومختار طريقة، يتسدد إجمالي السلة بالطريقة دي.</p>
             <div className="space-y-1 rounded-2xl bg-brand-900 px-4 py-3 text-sm text-white">
               <div className="flex justify-between"><span className="text-brand-100">الإجمالي</span><strong className="text-lg">{formatMoney(posLinesTotal)}</strong></div>
               <div className="flex justify-between text-brand-100"><span>المدفوع</span><span className="text-white">{formatMoney(posPaid)}</span></div>
@@ -939,7 +907,7 @@ export function SalesPage() {
                       <tr key={r.id} className="row-debit">
                         <Td>{formatDate(r.receivedAt)}</Td>
                         <Td className="font-semibold">{r.number}</Td>
-                        <Td>{METHODS[r.paymentMethod] || r.paymentMethod}</Td>
+                        <Td>{methods.find((method) => method.id === r.paymentMethod)?.name || '—'}</Td>
                         <Td className="font-bold">{formatMoney(r.amount)}</Td>
                       </tr>
                     ))}

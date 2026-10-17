@@ -35,13 +35,9 @@ enum CashDirection {
   OUT
 }
 
-enum PaymentMethod {
-  CASH
-  BANK_TRANSFER
+enum PayMethodKind {
+  IMMEDIATE
   CHECK
-  CARD
-  INSTAPAY
-  OTHER
 }
 
 enum PriceList {
@@ -310,6 +306,20 @@ model CashAccount {
   shifts       CashierShift[]
   expenses     Expense[]
   checks       BankCheck[]
+  payMethod    PayMethod?
+}
+
+model PayMethod {
+  id            String        @id @default(cuid())
+  code          String        @unique
+  name          String
+  kind          PayMethodKind @default(IMMEDIATE)
+  isActive      Boolean       @default(true)
+  sortOrder     Int           @default(0)
+  cashAccountId String?       @unique
+  createdAt     DateTime      @default(now())
+
+  cashAccount CashAccount? @relation(fields: [cashAccountId], references: [id])
 }
 
 model CashTransaction {
@@ -318,7 +328,7 @@ model CashTransaction {
   direction     CashDirection
   amount        Float
   description   String
-  paymentMethod PaymentMethod @default(CASH)
+  paymentMethod String        @default("")
   reference     String?
   createdById   String?
   createdAt     DateTime      @default(now())
@@ -339,7 +349,7 @@ model SalesInvoice {
   tax           Float         @default(0)
   total         Float         @default(0)
   paidAmount    Float         @default(0)
-  paymentMethod PaymentMethod @default(CASH)
+  paymentMethod String        @default("")
   taxRate       Float         @default(0)
   shiftId       String?
   notes         String?
@@ -386,7 +396,7 @@ model PurchaseInvoice {
   tax           Float         @default(0)
   total         Float         @default(0)
   paidAmount    Float         @default(0)
-  paymentMethod PaymentMethod @default(CASH)
+  paymentMethod String        @default("")
   notes         String?
   createdById   String?
   createdAt     DateTime      @default(now())
@@ -482,17 +492,17 @@ model Payment {
   id                 String        @id @default(cuid())
   number             String        @unique
   supplierId         String
-  cashAccountId      String
+  cashAccountId      String?
   purchaseInvoiceId  String?
   amount             Float
-  paymentMethod      PaymentMethod @default(CASH)
+  paymentMethod      String        @default("")
   referenceNo        String?
   note               String?
   paidAt             DateTime      @default(now())
   createdAt          DateTime      @default(now())
 
   supplier        Supplier         @relation(fields: [supplierId], references: [id])
-  cashAccount     CashAccount      @relation(fields: [cashAccountId], references: [id])
+  cashAccount     CashAccount?     @relation(fields: [cashAccountId], references: [id])
   purchaseInvoice PurchaseInvoice? @relation(fields: [purchaseInvoiceId], references: [id])
 }
 
@@ -500,10 +510,10 @@ model Receipt {
   id              String        @id @default(cuid())
   number          String        @unique
   customerId      String
-  cashAccountId   String
+  cashAccountId   String?
   salesInvoiceId  String?
   amount          Float
-  paymentMethod   PaymentMethod @default(CASH)
+  paymentMethod   String        @default("")
   referenceNo     String?
   note            String?
   shiftId         String?
@@ -511,7 +521,7 @@ model Receipt {
   createdAt       DateTime      @default(now())
 
   customer     Customer      @relation(fields: [customerId], references: [id])
-  cashAccount  CashAccount   @relation(fields: [cashAccountId], references: [id])
+  cashAccount  CashAccount?  @relation(fields: [cashAccountId], references: [id])
   salesInvoice SalesInvoice? @relation(fields: [salesInvoiceId], references: [id])
   shift        CashierShift? @relation(fields: [shiftId], references: [id])
 }
@@ -614,7 +624,7 @@ model Expense {
   shiftId       String?
   amount        Float
   expenseDate   DateTime      @default(now())
-  paymentMethod PaymentMethod @default(CASH)
+  paymentMethod String        @default("")
   notes         String?
   createdAt     DateTime      @default(now())
 
@@ -632,10 +642,15 @@ model BankCheck {
   issueDate   DateTime       @default(now())
   dueDate     DateTime
   status      CheckStatus    @default(PENDING)
-  customerId  String?
-  supplierId  String?
-  accountId   String?
-  notes       String?
+  customerId       String?
+  supplierId       String?
+  accountId        String?
+  salesInvoiceId   String?
+  purchaseInvoiceId String?
+  methodId         String?
+  receiptId        String?
+  paymentId        String?
+  notes            String?
   createdAt   DateTime       @default(now())
 
   customer Customer?    @relation(fields: [customerId], references: [id])

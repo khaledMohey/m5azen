@@ -1,16 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { CashDirection, InvoiceStatus, PaymentMethod } from '@prisma/client';
+import { CashDirection, InvoiceStatus, PayMethodKind } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
-
-const METHOD_LABELS: Record<PaymentMethod, string> = {
-  CASH: 'نقدي',
-  BANK_TRANSFER: 'تحويل بنكي',
-  CHECK: 'شيك',
-  CARD: 'بطاقة',
-  INSTAPAY: 'إنستاباي',
-  OTHER: 'أخرى',
-};
 
 @Injectable()
 export class CashService {
@@ -55,7 +46,7 @@ export class CashService {
     direction: CashDirection;
     amount: number;
     description: string;
-    paymentMethod?: PaymentMethod;
+    paymentMethod?: string;
     reference?: string;
     createdById?: string;
   }) {
@@ -63,6 +54,7 @@ export class CashService {
     return this.prisma.$transaction(async (tx) => {
       const account = await tx.cashAccount.findUnique({ where: { id: data.accountId } });
       if (!account) throw new NotFoundException('حساب الخزنة غير موجود');
+      const method = await tx.payMethod.findUnique({ where: { cashAccountId: data.accountId } });
       const delta = data.direction === CashDirection.IN ? data.amount : -data.amount;
       if (account.balance + delta < 0) {
         throw new BadRequestException('رصيد الخزنة غير كافٍ');
@@ -77,7 +69,7 @@ export class CashService {
           direction: data.direction,
           amount: data.amount,
           description: data.description,
-          paymentMethod: data.paymentMethod || PaymentMethod.CASH,
+          paymentMethod: method?.id || data.paymentMethod || '',
           reference: data.reference,
           createdById: data.createdById,
         },
@@ -144,16 +136,17 @@ export class CashService {
 
   async createReceipt(data: {
     customerId: string;
-    cashAccountId: string;
+    methodId: string;
     amount: number;
     salesInvoiceId?: string;
-    paymentMethod?: PaymentMethod;
     referenceNo?: string;
     note?: string;
   }) {
     if (data.amount <= 0) throw new BadRequestException('المبلغ يجب أن يكون أكبر من صفر');
-    const method = data.paymentMethod || PaymentMethod.CASH;
-    const methodLabel = METHOD_LABELS[method];
+    const method = await this.prisma.payMethod.findUnique({ where: { id: data.methodId } });
+    if (!method || !method.isActive) throw new BadRequestException('طريقة الدفع غير موجودة');
+    const methodLabel = method.name;
+    const isCheck = method.kind === PayMethodKind.CHECK;
 
     const openInvoices = await this.prisma.salesInvoice.findMany({
       where: {
@@ -198,10 +191,12 @@ export class CashService {
         where: { id: data.customerId },
         data: { balance: { decrement: data.amount } },
       });
-      await tx.cashAccount.update({
-        where: { id: data.cashAccountId },
-        data: { balance: { increment: data.amount } },
-      });
+      if (!isCheck && method.cashAccountId) {
+        await tx.cashAccount.update({
+          where: { id: method.cashAccountId },
+          data: { balance: { increment: data.amount } },
+        });
+      }
 
       const created = [];
       let idx = 0;
@@ -212,60 +207,97 @@ export class CashService {
           data: {
             paidAmount: slice.nextPaid,
             status: slice.nextStatus,
-            paymentMethod: method,
           },
         });
         const desc = `تحصيل من ${customer.name} — ${slice.invoiceNumber} (${methodLabel})`;
-        await tx.cashTransaction.create({
-          data: {
-            accountId: data.cashAccountId,
-            direction: CashDirection.IN,
-            amount: slice.amount,
-            description: data.note || desc,
-            paymentMethod: method,
-            reference: number,
-          },
-        });
-        created.push(await tx.receipt.create({
+        if (!isCheck && method.cashAccountId) {
+          await tx.cashTransaction.create({
+            data: {
+              accountId: method.cashAccountId,
+              direction: CashDirection.IN,
+              amount: slice.amount,
+              description: data.note || desc,
+              paymentMethod: method.id,
+              reference: number,
+            },
+          });
+        }
+        const receipt = await tx.receipt.create({
           data: {
             number,
             customerId: data.customerId,
-            cashAccountId: data.cashAccountId,
+            cashAccountId: isCheck ? null : method.cashAccountId,
             salesInvoiceId: slice.invoiceId,
             amount: slice.amount,
-            paymentMethod: method,
+            paymentMethod: method.id,
             referenceNo: data.referenceNo,
-            note: data.note || desc,
+            note: data.note || (isCheck ? `${desc} — معلّق حتى التحصيل` : desc),
           },
           include: { customer: true, cashAccount: true, salesInvoice: true },
-        }));
+        });
+        if (isCheck) {
+          await tx.bankCheck.create({
+            data: {
+              direction: 'IN',
+              checkNumber: data.referenceNo || number,
+              bankName: 'شيك',
+              amount: slice.amount,
+              dueDate: new Date(),
+              customerId: data.customerId,
+              salesInvoiceId: slice.invoiceId,
+              methodId: method.id,
+              receiptId: receipt.id,
+              notes: desc,
+            },
+          });
+        }
+        created.push(receipt);
       }
 
       if (left > 0.001 || created.length === 0) {
         const number = numbers[idx] || numbers[0];
         const desc = data.note || `تحصيل من ${customer.name} (${methodLabel})`;
-        await tx.cashTransaction.create({
-          data: {
-            accountId: data.cashAccountId,
-            direction: CashDirection.IN,
-            amount: created.length === 0 ? data.amount : left,
-            description: desc,
-            paymentMethod: method,
-            reference: number,
-          },
-        });
-        created.push(await tx.receipt.create({
+        const unapplied = created.length === 0 ? data.amount : left;
+        if (!isCheck && method.cashAccountId) {
+          await tx.cashTransaction.create({
+            data: {
+              accountId: method.cashAccountId,
+              direction: CashDirection.IN,
+              amount: unapplied,
+              description: desc,
+              paymentMethod: method.id,
+              reference: number,
+            },
+          });
+        }
+        const receipt = await tx.receipt.create({
           data: {
             number,
             customerId: data.customerId,
-            cashAccountId: data.cashAccountId,
-            amount: created.length === 0 ? data.amount : left,
-            paymentMethod: method,
+            cashAccountId: isCheck ? null : method.cashAccountId,
+            amount: unapplied,
+            paymentMethod: method.id,
             referenceNo: data.referenceNo,
-            note: desc,
+            note: data.note || (isCheck ? `${desc} — معلّق حتى التحصيل` : desc),
           },
           include: { customer: true, cashAccount: true, salesInvoice: true },
-        }));
+        });
+        if (isCheck) {
+          await tx.bankCheck.create({
+            data: {
+              direction: 'IN',
+              checkNumber: data.referenceNo || number,
+              bankName: 'شيك',
+              amount: unapplied,
+              dueDate: new Date(),
+              customerId: data.customerId,
+              methodId: method.id,
+              receiptId: receipt.id,
+              notes: desc,
+            },
+          });
+        }
+        created.push(receipt);
       }
 
       return created[0];
@@ -274,32 +306,35 @@ export class CashService {
 
   async createPayment(data: {
     supplierId: string;
-    cashAccountId: string;
+    methodId: string;
     amount: number;
     purchaseInvoiceId?: string;
-    paymentMethod?: PaymentMethod;
     referenceNo?: string;
     note?: string;
   }) {
     if (data.amount <= 0) throw new BadRequestException('المبلغ يجب أن يكون أكبر من صفر');
+    const method = await this.prisma.payMethod.findUnique({ where: { id: data.methodId } });
+    if (!method || !method.isActive) throw new BadRequestException('طريقة الدفع غير موجودة');
     const number = await this.sequence.next('payments', 'PAY');
-    const method = data.paymentMethod || PaymentMethod.CASH;
-    const methodLabel = METHOD_LABELS[method];
+    const methodLabel = method.name;
+    const isCheck = method.kind === PayMethodKind.CHECK;
 
     return this.prisma.$transaction(async (tx) => {
       const supplier = await tx.supplier.findUnique({ where: { id: data.supplierId } });
       if (!supplier) throw new NotFoundException('المورد غير موجود');
-      const account = await tx.cashAccount.findUnique({ where: { id: data.cashAccountId } });
-      if (!account || account.balance < data.amount) {
-        throw new BadRequestException('رصيد الخزنة غير كافٍ');
+      if (!isCheck && method.cashAccountId) {
+        const account = await tx.cashAccount.findUnique({ where: { id: method.cashAccountId } });
+        if (!account || account.balance < data.amount) {
+          throw new BadRequestException('رصيد الحساب غير كافٍ');
+        }
+        await tx.cashAccount.update({
+          where: { id: method.cashAccountId },
+          data: { balance: { decrement: data.amount } },
+        });
       }
 
       await tx.supplier.update({
         where: { id: data.supplierId },
-        data: { balance: { decrement: data.amount } },
-      });
-      await tx.cashAccount.update({
-        where: { id: data.cashAccountId },
         data: { balance: { decrement: data.amount } },
       });
 
@@ -313,7 +348,7 @@ export class CashService {
           if (paidAmount >= inv.total) status = InvoiceStatus.PAID;
           await tx.purchaseInvoice.update({
             where: { id: inv.id },
-            data: { paidAmount, status, paymentMethod: method },
+            data: { paidAmount, status },
           });
         }
       }
@@ -322,30 +357,49 @@ export class CashService {
         data.note ||
         `سداد لـ ${supplier.name}${invRef ? ` — ${invRef}` : ''} (${methodLabel})`;
 
-      await tx.cashTransaction.create({
-        data: {
-          accountId: data.cashAccountId,
-          direction: CashDirection.OUT,
-          amount: data.amount,
-          description: desc,
-          paymentMethod: method,
-          reference: number,
-        },
-      });
+      if (!isCheck && method.cashAccountId) {
+        await tx.cashTransaction.create({
+          data: {
+            accountId: method.cashAccountId,
+            direction: CashDirection.OUT,
+            amount: data.amount,
+            description: desc,
+            paymentMethod: method.id,
+            reference: number,
+          },
+        });
+      }
 
-      return tx.payment.create({
+      const payment = await tx.payment.create({
         data: {
           number,
           supplierId: data.supplierId,
-          cashAccountId: data.cashAccountId,
+          cashAccountId: isCheck ? null : method.cashAccountId,
           purchaseInvoiceId: data.purchaseInvoiceId,
           amount: data.amount,
-          paymentMethod: method,
+          paymentMethod: method.id,
           referenceNo: data.referenceNo,
-          note: data.note || desc,
+          note: data.note || (isCheck ? `${desc} — معلّق حتى الصرف` : desc),
         },
         include: { supplier: true, cashAccount: true, purchaseInvoice: true },
       });
+      if (isCheck) {
+        await tx.bankCheck.create({
+          data: {
+            direction: 'OUT',
+            checkNumber: data.referenceNo || number,
+            bankName: 'شيك',
+            amount: data.amount,
+            dueDate: new Date(),
+            supplierId: data.supplierId,
+            purchaseInvoiceId: data.purchaseInvoiceId,
+            methodId: method.id,
+            paymentId: payment.id,
+            notes: desc,
+          },
+        });
+      }
+      return payment;
     });
   }
 

@@ -1,7 +1,8 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { IsEnum, IsNumber, IsOptional, IsString } from 'class-validator';
-import { CashDirection, PaymentMethod, Role } from '@prisma/client';
+import { CashDirection, PayMethodKind, Role } from '@prisma/client';
 import { CashService } from './cash.service';
+import { PayMethodsService } from './pay-methods.service';
 import { Roles } from '../common/guards';
 
 class AccountDto {
@@ -16,33 +17,50 @@ class TxDto {
   @IsEnum(CashDirection) direction!: CashDirection;
   @IsNumber() amount!: number;
   @IsString() description!: string;
-  @IsOptional() @IsEnum(PaymentMethod) paymentMethod?: PaymentMethod;
+  @IsOptional() @IsString() paymentMethod?: string;
   @IsOptional() @IsString() reference?: string;
 }
 
 class ReceiptDto {
   @IsString() customerId!: string;
-  @IsString() cashAccountId!: string;
+  @IsString() methodId!: string;
   @IsNumber() amount!: number;
   @IsOptional() @IsString() salesInvoiceId?: string;
-  @IsOptional() @IsEnum(PaymentMethod) paymentMethod?: PaymentMethod;
   @IsOptional() @IsString() referenceNo?: string;
   @IsOptional() @IsString() note?: string;
 }
 
 class PaymentDto {
   @IsString() supplierId!: string;
-  @IsString() cashAccountId!: string;
+  @IsString() methodId!: string;
   @IsNumber() amount!: number;
   @IsOptional() @IsString() purchaseInvoiceId?: string;
-  @IsOptional() @IsEnum(PaymentMethod) paymentMethod?: PaymentMethod;
   @IsOptional() @IsString() referenceNo?: string;
   @IsOptional() @IsString() note?: string;
 }
 
+class MethodDto {
+  @IsString() name!: string;
+  @IsString() code!: string;
+  @IsOptional() @IsEnum(PayMethodKind) kind?: PayMethodKind;
+  @IsOptional() @IsString() accountType?: string;
+  @IsOptional() @IsNumber() balance?: number;
+}
+
 @Controller('cash')
 export class CashController {
-  constructor(private service: CashService) {}
+  constructor(private service: CashService, private methods: PayMethodsService) {}
+
+  @Get('methods')
+  listMethods() {
+    return this.methods.list();
+  }
+
+  @Post('methods')
+  @Roles(Role.ADMIN, Role.ACCOUNTANT)
+  createMethod(@Body() dto: MethodDto) {
+    return this.methods.create(dto);
+  }
 
   @Get('accounts')
   accounts() {

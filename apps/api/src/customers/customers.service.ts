@@ -1,15 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { PaymentMethod, PriceList } from '@prisma/client';
+import { PriceList } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-
-const METHOD_LABELS: Record<PaymentMethod, string> = {
-  CASH: 'نقدي',
-  BANK_TRANSFER: 'تحويل بنكي',
-  CHECK: 'شيك',
-  CARD: 'بطاقة',
-  INSTAPAY: 'إنستاباي',
-  OTHER: 'أخرى',
-};
 
 @Injectable()
 export class CustomersService {
@@ -76,6 +67,8 @@ export class CustomersService {
   }
 
   async statement(id: string) {
+    const methods = await this.prisma.payMethod.findMany();
+    const methodName = (value?: string | null) => methods.find((m) => m.id === value)?.name || null;
     const customer = await this.findOne(id);
     const sales = await this.prisma.salesInvoice.findMany({
       where: { customerId: id, status: { not: 'CANCELLED' } },
@@ -107,7 +100,7 @@ export class CustomersService {
         ref: s.number,
         debit: s.total,
         credit: 0,
-        method: METHOD_LABELS[s.paymentMethod] || null,
+        method: methodName(s.paymentMethod),
         note: s.notes,
       });
     }
@@ -118,7 +111,7 @@ export class CustomersService {
         ref: r.number,
         debit: 0,
         credit: r.amount,
-        method: METHOD_LABELS[r.paymentMethod] || null,
+        method: methodName(r.paymentMethod),
         note: [r.note, r.referenceNo ? `مرجع: ${r.referenceNo}` : null].filter(Boolean).join(' — ') || null,
       });
     }

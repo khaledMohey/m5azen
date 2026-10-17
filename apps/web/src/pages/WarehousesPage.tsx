@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Boxes, CheckCircle2, Hash, MapPin, PackageCheck, Pencil, Plus, Trash2, Warehouse } from 'lucide-react';
 import ExcelJS from 'exceljs';
 import { api, initialQuery } from '../lib/api';
@@ -45,6 +46,7 @@ function issues(form: FormState, items: Warehouse[], currentId?: string) {
 
 export function WarehousesPage() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const toast = useToast();
   const confirm = useConfirm();
   const [items, setItems] = useState<Warehouse[]>([]);
@@ -91,6 +93,10 @@ export function WarehousesPage() {
   const stockedCount = items.filter((row) => (row.quantity || 0) > 0).length;
   const totalQty = items.reduce((sum, row) => sum + (row.quantity || 0), 0);
   const maxQty = Math.max(1, ...items.map((row) => row.quantity || 0));
+
+  function openStock(row: Warehouse) {
+    navigate(`/stock?warehouse=${encodeURIComponent(row.id)}`);
+  }
 
   function openCreate() {
     setEditingId(null);
@@ -211,7 +217,7 @@ export function WarehousesPage() {
           <>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {pager.slice.map((row) => (
-                <div key={row.id} className="lift rounded-2xl border border-slate-200 bg-white p-4">
+                <div key={row.id} className="lift cursor-pointer rounded-2xl border border-slate-200 bg-white p-4" onClick={() => openStock(row)}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-3">
                       <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-brand-600 to-brand-900 text-white"><Warehouse size={19} /></span>
@@ -232,7 +238,7 @@ export function WarehousesPage() {
                       <div className="text-xs text-muted">الرصيد</div>
                       <div className="font-extrabold tabular-nums">{(row.quantity || 0).toLocaleString('ar-EG')} <span className="text-xs font-medium text-muted">وحدة · {row.itemCount || 0} صنف</span></div>
                     </div>
-                    <div className="flex gap-1">
+                    <div className="flex gap-1" onClick={(event) => event.stopPropagation()}>
                       <IconAction label="تعديل" onClick={() => openEdit(row)}><Pencil size={14} /></IconAction>
                       {user?.role === 'ADMIN' && <IconAction label="حذف" danger onClick={() => remove(row)}><Trash2 size={14} /></IconAction>}
                     </div>
@@ -259,7 +265,7 @@ export function WarehousesPage() {
               </thead>
               <tbody>
                 {pager.slice.map((row) => (
-                  <tr key={row.id}>
+                  <tr key={row.id} className="cursor-pointer" onClick={() => openStock(row)}>
                     {columns.visible('status') && (
                       <Td><Badge tone={row.isActive ? 'emerald' : 'slate'}>{row.isActive ? 'نشط' : 'متوقف'}</Badge></Td>
                     )}
@@ -286,7 +292,7 @@ export function WarehousesPage() {
                     )}
                     {columns.visible('code') && <Td><span className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-xs font-bold text-slate-700" dir="ltr">{row.code}</span></Td>}
                     <Td>
-                      <div className="flex gap-1">
+                      <div className="flex gap-1" onClick={(event) => event.stopPropagation()}>
                         <IconAction label="تعديل" onClick={() => openEdit(row)}><Pencil size={14} /></IconAction>
                         {user?.role === 'ADMIN' && <IconAction label="حذف" danger onClick={() => remove(row)}><Trash2 size={14} /></IconAction>}
                       </div>

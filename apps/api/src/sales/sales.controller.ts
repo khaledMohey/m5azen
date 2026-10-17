@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
-import { IsArray, IsBoolean, IsEnum, IsNumber, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsNumber, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
-import { InvoiceStatus, PaymentMethod, Role } from '@prisma/client';
+import { InvoiceStatus, Role } from '@prisma/client';
 import { SalesService } from './sales.service';
 import { Roles } from '../common/guards';
 
@@ -10,6 +10,12 @@ class LineDto {
   @IsNumber() quantity!: number;
   @IsNumber() unitPrice!: number;
   @IsOptional() @IsNumber() discount?: number;
+}
+
+class TenderDto {
+  @IsString() methodId!: string;
+  @IsNumber() amount!: number;
+  @IsOptional() @IsString() referenceNo?: string;
 }
 
 class CreateSalesDto {
@@ -22,8 +28,7 @@ class CreateSalesDto {
   @IsOptional() @IsString() shiftId?: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsNumber() paidAmount?: number;
-  @IsOptional() @IsString() cashAccountId?: string;
-  @IsOptional() @IsEnum(PaymentMethod) paymentMethod?: PaymentMethod;
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => TenderDto) payments?: TenderDto[];
   @IsOptional() @IsBoolean() confirm?: boolean;
   @IsArray() @ValidateNested({ each: true }) @Type(() => LineDto)
   lines!: LineDto[];
@@ -51,8 +56,8 @@ export class SalesController {
 
   @Post(':id/confirm')
   @Roles(Role.ADMIN, Role.SALES, Role.ACCOUNTANT)
-  confirm(@Param('id') id: string, @Body() body: { cashAccountId?: string }) {
-    return this.service.confirm(id, body.cashAccountId);
+  confirm(@Param('id') id: string, @Body() body: { payments?: TenderDto[] }) {
+    return this.service.confirm(id, body.payments);
   }
 
   @Patch(':id')

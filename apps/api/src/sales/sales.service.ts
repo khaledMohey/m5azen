@@ -1,16 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { CashDirection, InvoiceStatus, PaymentMethod, StockMovementType } from '@prisma/client';
+import { InvoiceStatus, StockMovementType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
-
-const METHOD_LABELS: Record<PaymentMethod, string> = {
-  CASH: 'نقدي',
-  BANK_TRANSFER: 'تحويل بنكي',
-  CHECK: 'شيك',
-  CARD: 'بطاقة',
-  INSTAPAY: 'إنستاباي',
-  OTHER: 'أخرى',
-};
+import { normalizeTenders, postCustomerTenders, reverseSaleMoney, sumTenders, TenderInput } from '../cash/tenders';
 
 @Injectable()
 export class SalesService {
@@ -55,8 +47,7 @@ export class SalesService {
     tax?: number;
     notes?: string;
     paidAmount?: number;
-    cashAccountId?: string;
-    paymentMethod?: PaymentMethod;
+    payments?: TenderInput[];
     taxRate?: number;
     shiftId?: string | null;
     confirm?: boolean;
@@ -66,11 +57,8 @@ export class SalesService {
     if (!data.lines?.length) throw new BadRequestException('أضف بنوداً للفاتورة');
     if (data.shiftId) await this.assertOpenShift(data.shiftId);
     const number = await this.sequence.next('sales', 'SAL');
-    const receiptNumber =
-      data.confirm && (data.paidAmount || 0) > 0
-        ? await this.sequence.next('receipts', 'RCP')
-        : null;
-    const method = data.paymentMethod || PaymentMethod.CASH;
+    const parts = normalizeTenders(data.payments);
+    const paidFromParts = sumTenders(parts);
     const products = await this.prisma.product.findMany({
       where: { id: { in: data.lines.map((l) => l.productId) } },
     });
@@ -86,7 +74,13 @@ export class SalesService {
       ? Math.round((subtotal - discount) * taxRate * 100) / 10000
       : (data.tax || 0);
     const total = subtotal - discount + tax;
-    const paidAmount = data.paidAmount || 0;
+    const paidAmount = parts.length ? paidFromParts : (data.paidAmount || 0);
+    if (paidAmount > total + 0.009) throw new BadRequestException('المدفوع أكبر من إجمالي الفاتورة');
+    if (data.confirm && paidAmount > 0 && !parts.length) throw new BadRequestException('قسّم المدفوع على طرق الدفع');
+    const receiptNumbers: string[] = [];
+    if (data.confirm) {
+      for (let i = 0; i < parts.length; i++) receiptNumbers.push(await this.sequence.next('receipts', 'RCP'));
+    }
     if (data.confirm) await this.assertCredit(data.customerId, total - paidAmount);
 
     return this.prisma.$transaction(async (tx) => {
@@ -124,24 +118,6 @@ export class SalesService {
           where: { id: data.customerId },
           data: { balance: { increment: total - paidAmount } },
         });
-        if (paidAmount > 0) {
-          if (!data.cashAccountId) throw new BadRequestException('اختر حساب خزنة للمبلغ المدفوع');
-          await tx.cashAccount.update({
-            where: { id: data.cashAccountId },
-            data: { balance: { increment: paidAmount } },
-          });
-          await tx.cashTransaction.create({
-            data: {
-              accountId: data.cashAccountId,
-              direction: CashDirection.IN,
-              amount: paidAmount,
-              description: `تحصيل فاتورة بيع ${number} (${METHOD_LABELS[method]})`,
-              paymentMethod: method,
-              reference: receiptNumber || number,
-              createdById: data.createdById,
-            },
-          });
-        }
       }
 
       const invoice = await tx.salesInvoice.create({
@@ -157,7 +133,7 @@ export class SalesService {
           taxRate,
           total,
           paidAmount,
-          paymentMethod: method,
+          paymentMethod: parts.length === 1 ? parts[0].methodId : '',
           shiftId: data.shiftId || null,
           notes: data.notes,
           createdById: data.createdById,
@@ -166,18 +142,15 @@ export class SalesService {
         include: { customer: true, warehouse: true, lines: { include: { product: true } } },
       });
 
-      if (data.confirm && paidAmount > 0 && data.cashAccountId && receiptNumber) {
-        await tx.receipt.create({
-          data: {
-            number: receiptNumber,
-            customerId: data.customerId,
-            cashAccountId: data.cashAccountId,
-            salesInvoiceId: invoice.id,
-            amount: paidAmount,
-            paymentMethod: method,
-            shiftId: data.shiftId || null,
-            note: `تحصيل فاتورة ${number} (${METHOD_LABELS[method]})`,
-          },
+      if (data.confirm && parts.length) {
+        await postCustomerTenders(tx, {
+          parts,
+          customerId: data.customerId,
+          salesInvoiceId: invoice.id,
+          invoiceNumber: number,
+          shiftId: data.shiftId,
+          createdById: data.createdById,
+          receiptNumbers,
         });
       }
 
@@ -185,14 +158,17 @@ export class SalesService {
     });
   }
 
-  async confirm(id: string, cashAccountId?: string) {
+  async confirm(id: string, payments?: TenderInput[]) {
     const inv = await this.findOne(id);
     if (inv.status !== InvoiceStatus.DRAFT) {
       throw new BadRequestException('الفاتورة ليست مسودة');
     }
-    await this.assertCredit(inv.customerId, inv.total - inv.paidAmount);
-    const receiptNumber =
-      inv.paidAmount > 0 ? await this.sequence.next('receipts', 'RCP') : null;
+    const parts = normalizeTenders(payments);
+    const paidAmount = parts.length ? sumTenders(parts) : 0;
+    if (paidAmount > inv.total + 0.009) throw new BadRequestException('المدفوع أكبر من إجمالي الفاتورة');
+    await this.assertCredit(inv.customerId, inv.total - paidAmount);
+    const receiptNumbers: string[] = [];
+    for (let i = 0; i < parts.length; i++) receiptNumbers.push(await this.sequence.next('receipts', 'RCP'));
     return this.prisma.$transaction(async (tx) => {
       for (const line of inv.lines) {
         const bal = await tx.stockBalance.findUnique({
@@ -221,48 +197,29 @@ export class SalesService {
           },
         });
       }
-      const remaining = inv.total - inv.paidAmount;
       await tx.customer.update({
         where: { id: inv.customerId },
-        data: { balance: { increment: remaining } },
+        data: { balance: { increment: inv.total - paidAmount } },
       });
-      if (inv.paidAmount > 0) {
-        if (!cashAccountId) throw new BadRequestException('اختر حساب خزنة');
-        await tx.cashAccount.update({
-          where: { id: cashAccountId },
-          data: { balance: { increment: inv.paidAmount } },
-        });
-        await tx.cashTransaction.create({
-          data: {
-            accountId: cashAccountId,
-            direction: CashDirection.IN,
-            amount: inv.paidAmount,
-            description: `تحصيل فاتورة بيع ${inv.number}`,
-            paymentMethod: inv.paymentMethod,
-            reference: receiptNumber || inv.number,
-          },
-        });
-        await tx.receipt.create({
-          data: {
-            number: receiptNumber!,
-            customerId: inv.customerId,
-            cashAccountId,
-            salesInvoiceId: inv.id,
-            amount: inv.paidAmount,
-            paymentMethod: inv.paymentMethod,
-            note: `تحصيل فاتورة ${inv.number}`,
-          },
+      if (parts.length) {
+        await postCustomerTenders(tx, {
+          parts,
+          customerId: inv.customerId,
+          salesInvoiceId: inv.id,
+          invoiceNumber: inv.number,
+          shiftId: inv.shiftId,
+          receiptNumbers,
         });
       }
       const status =
-        inv.paidAmount >= inv.total
+        paidAmount >= inv.total
           ? InvoiceStatus.PAID
-          : inv.paidAmount > 0
+          : paidAmount > 0
             ? InvoiceStatus.PARTIAL
             : InvoiceStatus.CONFIRMED;
       return tx.salesInvoice.update({
         where: { id },
-        data: { status },
+        data: { status, paidAmount, paymentMethod: parts.length === 1 ? parts[0].methodId : '' },
         include: { customer: true, warehouse: true, lines: { include: { product: true } } },
       });
     });
@@ -293,8 +250,8 @@ export class SalesService {
     taxRate?: number;
     notes?: string;
     paidAmount?: number;
-    cashAccountId?: string;
-    paymentMethod?: PaymentMethod;
+    payments?: TenderInput[];
+    confirm?: boolean;
     shiftId?: string | null;
     lines: { productId: string; quantity: number; unitPrice: number; discount?: number }[];
   }) {
@@ -324,15 +281,20 @@ export class SalesService {
     const taxRate = data.taxRate ?? inv.taxRate ?? 0;
     const tax = Math.round((subtotal - discount) * taxRate * 100) / 10000;
     const total = subtotal - discount + tax;
-    const paidAmount = data.paidAmount ?? inv.paidAmount;
-    const method = data.paymentMethod || inv.paymentMethod;
-    const reconfirm = inv.status !== InvoiceStatus.DRAFT;
-    if (reconfirm) await this.assertCredit(data.customerId, total - paidAmount - (inv.total - inv.paidAmount));
-
-    const receiptNumber = reconfirm && paidAmount > 0 ? await this.sequence.next('receipts', 'RCP') : null;
+    const parts = data.payments ? normalizeTenders(data.payments) : [];
+    const paidAmount = data.payments ? sumTenders(parts) : (data.paidAmount ?? inv.paidAmount);
+    if (paidAmount > total + 0.009) throw new BadRequestException('المدفوع أكبر من إجمالي الفاتورة');
+    const alreadyPosted = inv.status !== InvoiceStatus.DRAFT;
+    const posting = alreadyPosted || !!data.confirm;
+    if (posting && paidAmount > 0 && !parts.length) throw new BadRequestException('قسّم المدفوع على طرق الدفع');
+    if (posting) await this.assertCredit(data.customerId, total - paidAmount - (alreadyPosted ? inv.total - inv.paidAmount : 0));
+    const receiptNumbers: string[] = [];
+    if (posting) {
+      for (let i = 0; i < parts.length; i++) receiptNumbers.push(await this.sequence.next('receipts', 'RCP'));
+    }
 
     return this.prisma.$transaction(async (tx) => {
-      if (reconfirm) {
+      if (alreadyPosted) {
         for (const line of inv.lines) {
           await tx.stockBalance.upsert({
             where: { warehouseId_productId: { warehouseId: inv.warehouseId, productId: line.productId } },
@@ -347,21 +309,12 @@ export class SalesService {
         if (due !== 0) {
           await tx.customer.update({ where: { id: inv.customerId }, data: { balance: { decrement: due } } });
         }
-        for (const receipt of inv.receipts) {
-          await tx.cashAccount.update({
-            where: { id: receipt.cashAccountId },
-            data: { balance: { decrement: receipt.amount } },
-          });
-          await tx.cashTransaction.deleteMany({
-            where: { reference: receipt.number, accountId: receipt.cashAccountId },
-          });
-        }
-        await tx.receipt.deleteMany({ where: { salesInvoiceId: id } });
+        await reverseSaleMoney(tx, id, inv.receipts);
       }
 
       await tx.salesInvoiceLine.deleteMany({ where: { invoiceId: id } });
 
-      if (reconfirm) {
+      if (posting) {
         for (const line of lines) {
           const bal = await tx.stockBalance.findUnique({
             where: { warehouseId_productId: { warehouseId: data.warehouseId, productId: line.productId } },
@@ -383,38 +336,19 @@ export class SalesService {
           where: { id: data.customerId },
           data: { balance: { increment: total - paidAmount } },
         });
-        if (paidAmount > 0) {
-          if (!data.cashAccountId) throw new BadRequestException('اختر حساب خزنة للمبلغ المدفوع');
-          await tx.cashAccount.update({
-            where: { id: data.cashAccountId },
-            data: { balance: { increment: paidAmount } },
-          });
-          await tx.cashTransaction.create({
-            data: {
-              accountId: data.cashAccountId,
-              direction: CashDirection.IN,
-              amount: paidAmount,
-              description: `تحصيل فاتورة بيع ${inv.number} (${METHOD_LABELS[method]})`,
-              paymentMethod: method,
-              reference: receiptNumber || inv.number,
-            },
-          });
-          await tx.receipt.create({
-            data: {
-              number: receiptNumber!,
-              customerId: data.customerId,
-              cashAccountId: data.cashAccountId,
-              salesInvoiceId: id,
-              amount: paidAmount,
-              paymentMethod: method,
-              shiftId: data.shiftId || null,
-              note: `تحصيل فاتورة ${inv.number}`,
-            },
+        if (parts.length) {
+          await postCustomerTenders(tx, {
+            parts,
+            customerId: data.customerId,
+            salesInvoiceId: id,
+            invoiceNumber: inv.number,
+            shiftId: data.shiftId,
+            receiptNumbers,
           });
         }
       }
 
-      const status = !reconfirm
+      const status = !posting
         ? InvoiceStatus.DRAFT
         : paidAmount >= total
           ? InvoiceStatus.PAID
@@ -433,8 +367,8 @@ export class SalesService {
           tax,
           taxRate,
           total,
-          paidAmount: reconfirm ? paidAmount : (data.paidAmount ?? inv.paidAmount),
-          paymentMethod: method,
+          paidAmount,
+          paymentMethod: parts.length === 1 ? parts[0].methodId : (parts.length ? '' : inv.paymentMethod),
           shiftId: data.shiftId === undefined ? inv.shiftId : (data.shiftId || null),
           notes: data.notes,
           status,
@@ -487,17 +421,10 @@ export class SalesService {
             data: { balance: { decrement: due } },
           });
         }
-        for (const receipt of inv.receipts) {
-          await tx.cashAccount.update({
-            where: { id: receipt.cashAccountId },
-            data: { balance: { decrement: receipt.amount } },
-          });
-          await tx.cashTransaction.deleteMany({
-            where: { reference: receipt.number, accountId: receipt.cashAccountId },
-          });
-        }
+        await reverseSaleMoney(tx, id, inv.receipts);
+      } else {
+        await tx.receipt.deleteMany({ where: { salesInvoiceId: id } });
       }
-      await tx.receipt.deleteMany({ where: { salesInvoiceId: id } });
       await tx.salesInvoice.delete({ where: { id } });
       return { ok: true };
     });

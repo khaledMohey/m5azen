@@ -5,6 +5,7 @@ import { api, formatDate, formatMoney, initialQuery } from '../lib/api';
 import { dueTone } from '../lib/due';
 import { DueAmount } from '../components/DueAmount';
 import { AddLineButton, EditorErrors, EditorSection, InvoiceEditor, LineCard, SummaryRow } from '../components/InvoiceEditor';
+import { TenderEditor, type PayMethodOption, type TenderPart } from '../components/TenderEditor';
 import { useConfirm, useToast } from '../lib/feedback';
 import { usePagedList } from '../lib/paging';
 import { useColumns } from '../lib/columns';
@@ -15,7 +16,7 @@ import {
 
 type Party = { id: string; name: string };
 type Product = { id: string; name: string; sku: string; costPrice: number };
-type Account = { id: string; name: string; balance?: number };
+const emptyPart = (): TenderPart => ({ methodId: '', amount: '' });
 type Line = {
   productId: string;
   quantity: number | '';
@@ -47,6 +48,7 @@ type Invoice = {
     total: number;
     product: { name: string; sku: string };
   }[];
+  payments?: { paymentMethod: string; amount: number }[];
 };
 
 const emptyLine = (): Line => ({
@@ -77,7 +79,7 @@ export function PurchasesPage() {
   const [suppliers, setSuppliers] = useState<Party[]>([]);
   const [warehouses, setWarehouses] = useState<Party[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
-  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [methods, setMethods] = useState<PayMethodOption[]>([]);
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<Invoice | null>(null);
   const [search, setSearch] = useState(initialQuery);
@@ -88,9 +90,7 @@ export function PurchasesPage() {
     warehouseId: '',
     discount: '' as number | '',
     tax: '' as number | '',
-    paidAmount: '' as number | '',
-    cashAccountId: '',
-    paymentMethod: 'CASH',
+    payments: [emptyPart()] as TenderPart[],
     notes: '',
     confirm: true,
   });
@@ -100,18 +100,18 @@ export function PurchasesPage() {
   const [triedSave, setTriedSave] = useState(false);
 
   async function load() {
-    const [inv, s, w, p, a] = await Promise.all([
+    const [inv, s, w, p, m] = await Promise.all([
       api<Invoice[]>('/purchases'),
       api<Party[]>('/suppliers'),
       api<Party[]>('/warehouses'),
       api<Product[]>('/products'),
-      api<Account[]>('/cash/accounts'),
+      api<PayMethodOption[]>('/cash/methods'),
     ]);
     setItems(inv);
     setSuppliers(s);
     setWarehouses(w);
     setProducts(p);
-    setAccounts(a);
+    setMethods(m);
   }
 
   useEffect(() => { load(); }, []);
@@ -181,7 +181,8 @@ export function PurchasesPage() {
   const taxPercent = num(form.tax);
   const taxAmount = Math.round(afterDiscount * taxPercent * 100) / 10000;
   const grand = afterDiscount + taxAmount;
-  const remaining = Math.max(0, grand - num(form.paidAmount));
+  const paidNow = form.payments.reduce((sum, part) => sum + num(part.amount), 0);
+  const remaining = Math.max(0, grand - paidNow);
   const filledLines = lines.filter((l) => l.productId);
   const badLine = (l: Line) => !!l.productId && !(num(l.quantity) > 0);
   const formErrors = [
@@ -189,8 +190,8 @@ export function PurchasesPage() {
     !form.warehouseId && 'اختر المخزن',
     !filledLines.length && 'أضف صنفًا واحدًا على الأقل',
     lines.some(badLine) && 'كل بند لازم يكون له كمية أكبر من صفر',
-    num(form.paidAmount) > grand + 0.009 && 'المدفوع أكبر من إجمالي الفاتورة',
-    form.confirm && num(form.paidAmount) > 0 && !form.cashAccountId && 'اختر حساب الخزنة للمبلغ المدفوع',
+    paidNow > grand + 0.009 && 'المدفوع أكبر من إجمالي الفاتورة',
+    form.confirm && form.payments.some((part) => num(part.amount) > 0 && !part.methodId) && 'اختر طريقة الدفع لكل جزء',
   ].filter(Boolean) as string[];
 
   async function save() {
@@ -201,10 +202,13 @@ export function PurchasesPage() {
       await api(editingId ? `/purchases/${editingId}` : '/purchases', {
         method: editingId ? 'PATCH' : 'POST',
         body: JSON.stringify({
-          ...form,
+          supplierId: form.supplierId,
+          warehouseId: form.warehouseId,
           discount: num(form.discount),
           tax: taxPercent,
-          paidAmount: num(form.paidAmount),
+          notes: form.notes || undefined,
+          confirm: form.confirm,
+          payments: form.payments.filter((part) => num(part.amount) > 0).map((part) => ({ methodId: part.methodId, amount: num(part.amount) })),
           lines: filledLines.map((l) => ({
             productId: l.productId,
             quantity: num(l.quantity),
@@ -220,8 +224,7 @@ export function PurchasesPage() {
       setOpen(false);
       setTriedSave(false);
       setForm({
-        supplierId: '', warehouseId: '', discount: '', tax: '', paidAmount: '',
-        cashAccountId: '', paymentMethod: 'CASH', notes: '', confirm: true,
+        supplierId: '', warehouseId: '', discount: '', tax: '', payments: [emptyPart()], notes: '', confirm: true,
       });
       setLines([emptyLine()]);
       load();
@@ -245,9 +248,9 @@ export function PurchasesPage() {
       warehouseId: inv.warehouse.id,
       discount: inv.discount,
       tax: inv.subtotal - inv.discount > 0 ? Math.round((inv.tax / (inv.subtotal - inv.discount)) * 10000) / 100 : 0,
-      paidAmount: inv.paidAmount,
-      cashAccountId: accounts[0]?.id || '',
-      paymentMethod: 'CASH',
+      payments: inv.payments?.length
+        ? inv.payments.map((payment) => ({ methodId: payment.paymentMethod, amount: payment.amount }))
+        : [emptyPart()],
       notes: '',
       confirm: true,
     });
@@ -285,8 +288,7 @@ export function PurchasesPage() {
     setEditingId(null);
     setTriedSave(false);
     setForm({
-      supplierId: '', warehouseId: warehouses.length === 1 ? warehouses[0].id : '', discount: '', tax: '', paidAmount: '',
-      cashAccountId: accounts[0]?.id || '', paymentMethod: 'CASH', notes: '', confirm: true,
+      supplierId: '', warehouseId: warehouses.length === 1 ? warehouses[0].id : '', discount: '', tax: '', payments: [emptyPart()], notes: '', confirm: true,
     });
     setLines([emptyLine()]);
     setOpen(true);
@@ -451,40 +453,23 @@ export function PurchasesPage() {
                 <NumberInput value={form.tax} onValueChange={(v) => setForm({ ...form, tax: v })} />
               </div>
             </div>
-            <div>
+            <div className="flex items-center justify-between gap-2">
               <Label>المدفوع الآن</Label>
-              <div className="flex gap-2">
-                <NumberInput value={form.paidAmount} onValueChange={(v) => setForm({ ...form, paidAmount: v })} />
-                <button type="button" className="shrink-0 rounded-xl border border-brand-200 bg-brand-50 px-3 text-xs font-bold text-brand-700 hover:bg-brand-100" onClick={() => setForm({ ...form, paidAmount: Math.round(grand * 100) / 100 })}>كامل</button>
-              </div>
+              <button
+                type="button"
+                className="shrink-0 rounded-xl border border-brand-200 bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700 hover:bg-brand-100"
+                onClick={() => setForm({
+                  ...form,
+                  payments: [{
+                    methodId: form.payments[0]?.methodId || methods.find((method) => method.kind === 'IMMEDIATE')?.id || methods[0]?.id || '',
+                    amount: Math.round(grand * 100) / 100,
+                  }],
+                })}
+              >
+                كامل
+              </button>
             </div>
-            {num(form.paidAmount) > 0 && (
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label>الخزنة / البنك</Label>
-                  <Select value={form.cashAccountId} onChange={(e) => setForm({ ...form, cashAccountId: e.target.value })}>
-                    <option value="">اختر الحساب</option>
-                    {accounts.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.name}{typeof a.balance === 'number' ? ` (${formatMoney(a.balance)})` : ''}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-                <div>
-                  <Label>طريقة الدفع</Label>
-                  <Select value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value })}>
-                    <option value="CASH">نقدي</option>
-                    <option value="BANK_TRANSFER">تحويل بنكي</option>
-                    <option value="CHECK">شيك</option>
-                    <option value="CARD">بطاقة</option>
-                    <option value="INSTAPAY">إنستاباي</option>
-                    <option value="OTHER">أخرى</option>
-                  </Select>
-                </div>
-                <p className="col-span-2 text-xs text-muted">لو رصيد الخزنة مش كفاية هيتسجل بالسالب</p>
-              </div>
-            )}
+            <TenderEditor methods={methods} parts={form.payments} onChange={(payments) => setForm({ ...form, payments })} />
             <div>
               <Label>ملاحظات</Label>
               <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="رقم فاتورة المورد مثلًا" />
@@ -494,7 +479,7 @@ export function PurchasesPage() {
               <SummaryRow label="خصم الفاتورة" value={formatMoney(num(form.discount))} />
               <SummaryRow label={`الضريبة (${taxPercent}%)`} value={formatMoney(taxAmount)} />
               <SummaryRow label="الإجمالي" value={formatMoney(grand)} strong />
-              <SummaryRow label="المدفوع" value={formatMoney(num(form.paidAmount))} />
+              <SummaryRow label="المدفوع" value={formatMoney(paidNow)} />
               <div className="flex items-center justify-between rounded-xl bg-white px-3 py-2 font-bold text-slate-900">
                 <span>المتبقي</span>
                 <DueAmount date={formDueDate} remaining={remaining} />
