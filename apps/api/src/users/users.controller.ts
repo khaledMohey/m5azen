@@ -1,14 +1,20 @@
-import { Body, Controller, Get, Param, Patch, Post, Put, Req } from '@nestjs/common';
-import { IsArray, IsBoolean, IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
+import { Body, Controller, Get, Param, Patch, Post, Put, Req, UseGuards } from '@nestjs/common';
+import { IsBoolean, IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
 import { Role } from '@prisma/client';
 import { UsersService } from './users.service';
 import { Roles } from '../common/guards';
+import { SettingsGateGuard } from '../settings/settings-gate';
 
 class CreateUserDto {
   @IsString() username!: string;
   @IsString() @MinLength(4) password!: string;
   @IsString() fullName!: string;
   @IsEnum(Role) role!: Role;
+}
+
+class ChangePasswordDto {
+  @IsString() @MinLength(1) currentPassword!: string;
+  @IsString() @MinLength(4) newPassword!: string;
 }
 
 class UpdateUserDto {
@@ -20,8 +26,18 @@ class UpdateUserDto {
 
 @Controller('users')
 @Roles(Role.ADMIN)
+@UseGuards(SettingsGateGuard)
 export class UsersController {
   constructor(private users: UsersService) {}
+
+  @Post('me/password')
+  @Roles()
+  changePassword(
+    @Req() req: { user: { userId: string } },
+    @Body() dto: ChangePasswordDto,
+  ) {
+    return this.users.changePassword(req.user.userId, dto.currentPassword, dto.newPassword);
+  }
 
   @Get()
   findAll() {

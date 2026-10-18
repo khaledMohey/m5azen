@@ -14,7 +14,7 @@ async function main() {
       fullName: 'مدير النظام',
       role: Role.ADMIN,
     },
-    update: { passwordHash },
+    update: {},
   });
 
   await prisma.setting.upsert({

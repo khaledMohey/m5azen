@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Building2, DatabaseBackup, FileArchive, Save, Server, ShieldCheck, UserPlus, Users } from 'lucide-react';
-import { api, getApiBase, setApiBase } from '../lib/api';
+import { api, getApiBase, setApiBase, setSettingsToken } from '../lib/api';
 import { ROLE_LABELS } from '../lib/nav';
 import { useAuth } from '../lib/auth';
 import { useToast } from '../lib/feedback';
@@ -23,9 +23,13 @@ export function SettingsPage() {
   const [userForm, setUserForm] = useState({ username: '', password: '', fullName: '', role: 'SALES', warehouseId: '' });
   const [backups, setBackups] = useState<string[]>([]);
   const [editingLook, setEditingLook] = useState(false);
-  const [busy, setBusy] = useState<'' | 'settings' | 'backup' | 'user'>('');
+  const [busy, setBusy] = useState<'' | 'settings' | 'backup' | 'user' | 'password'>('');
+  const [gate, setGate] = useState('');
+  const [unlocked, setUnlocked] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' });
 
   useEffect(() => {
+    if (!unlocked) return;
     api<Record<string, string>>('/settings').then((s) => {
       setCompanyName(s.companyName || '');
       setTaxNumber(s.taxNumber || '');
@@ -37,7 +41,49 @@ export function SettingsPage() {
       api<{ id: string; name: string }[]>('/warehouses').then(setWarehouses).catch(() => setWarehouses([]));
     }
     api<string[]>('/settings/backups').then(setBackups).catch(() => setBackups([]));
-  }, [user?.role]);
+  }, [user?.role, unlocked]);
+
+  async function unlockSettings() {
+    setBusy('settings');
+    try {
+      const res = await api<{ token: string }>('/settings/unlock', {
+        method: 'POST',
+        body: JSON.stringify({ password: gate }),
+      });
+      setSettingsToken(res.token);
+      setGate('');
+      setUnlocked(true);
+    } catch (e) {
+      setSettingsToken('');
+      toast.error(e instanceof Error ? e.message : 'تعذر فتح الإعدادات');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function changeOwnPassword() {
+    if (passwordForm.next.length < 4) {
+      toast.error('كلمة السر الجديدة 4 أحرف على الأقل');
+      return;
+    }
+    if (passwordForm.next !== passwordForm.confirm) {
+      toast.error('تأكيد كلمة السر غير مطابق');
+      return;
+    }
+    setBusy('password');
+    try {
+      await api('/users/me/password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword: passwordForm.current, newPassword: passwordForm.next }),
+      });
+      setPasswordForm({ current: '', next: '', confirm: '' });
+      toast.success('تم تغيير كلمة سر الدخول');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'تعذر تغيير كلمة السر');
+    } finally {
+      setBusy('');
+    }
+  }
 
   async function saveSettings() {
     setApiBase(apiUrl);
@@ -100,6 +146,19 @@ export function SettingsPage() {
   return (
     <div>
       {!editingLook && <PageHeader title="الإعدادات" subtitle="إعدادات واجهة النظام والمظهر العام، وبيانات الشركة والنسخ الاحتياطي" />}
+      {!unlocked ? (
+        <Card>
+          <CardHeader title="كلمة سر الإعدادات" subtitle="الصفحة مقفولة لحد ما تتأكد كلمة السر من السيرفر" icon={ShieldCheck} />
+          <form className="max-w-sm space-y-3" onSubmit={(e) => { e.preventDefault(); unlockSettings(); }}>
+            <div>
+              <Label>كلمة السر</Label>
+              <Input type="password" value={gate} onChange={(e) => setGate(e.target.value)} autoComplete="off" dir="ltr" />
+            </div>
+            <Button type="submit" disabled={busy === 'settings' || !gate}>فتح الإعدادات</Button>
+          </form>
+        </Card>
+      ) : (
+      <>
       <AppearanceSettings onEditing={setEditingLook} />
       {editingLook ? null : (<>
 
@@ -165,6 +224,25 @@ export function SettingsPage() {
         )}
       </div>
 
+      <Card className="mt-4">
+        <CardHeader title="كلمة سر الدخول" subtitle="تغيير كلمة السر اللي بتدخل بيها للنظام" icon={ShieldCheck} />
+        <form className="grid gap-3 sm:grid-cols-3" onSubmit={(e) => { e.preventDefault(); changeOwnPassword(); }}>
+          <div>
+            <Label>كلمة السر الحالية</Label>
+            <Input type="password" value={passwordForm.current} onChange={(e) => setPasswordForm({ ...passwordForm, current: e.target.value })} autoComplete="current-password" dir="ltr" />
+          </div>
+          <div>
+            <Label>كلمة السر الجديدة</Label>
+            <Input type="password" value={passwordForm.next} onChange={(e) => setPasswordForm({ ...passwordForm, next: e.target.value })} autoComplete="new-password" dir="ltr" />
+          </div>
+          <div>
+            <Label>تأكيد كلمة السر</Label>
+            <Input type="password" value={passwordForm.confirm} onChange={(e) => setPasswordForm({ ...passwordForm, confirm: e.target.value })} autoComplete="new-password" dir="ltr" />
+          </div>
+          <Button type="submit" disabled={busy === 'password'}>حفظ كلمة السر</Button>
+        </form>
+      </Card>
+
       {isAdmin && (
         <Card className="mt-4">
           <CardHeader title="المستخدمين وصلاحية المخزن" subtitle={`${users.length} مستخدم`} icon={Users} />
@@ -223,6 +301,8 @@ export function SettingsPage() {
         </Card>
       )}
       </>)}
+      </>
+      )}
     </div>
   );
 }

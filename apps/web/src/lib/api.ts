@@ -1,5 +1,11 @@
 const STORAGE_KEY = 'm5azen_api_url';
 
+let settingsToken = '';
+
+export function setSettingsToken(token: string) {
+  settingsToken = token;
+}
+
 const LOCAL_HOST = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
 
 export function getApiBase(): string {
@@ -33,6 +39,7 @@ export async function api<T>(
     ...(options.headers as Record<string, string>),
   };
   if (token) headers.Authorization = `Bearer ${token}`;
+  if (settingsToken) headers['x-settings-token'] = settingsToken;
 
   const res = await fetch(`${getApiBase()}${path.startsWith('/api') ? path : `/api${path}`}`, {
     ...options,
