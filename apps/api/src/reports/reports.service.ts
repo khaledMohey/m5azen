@@ -63,33 +63,176 @@ export class ReportsService {
     const sales = await this.salesSummary(from, to);
     const purchases = await this.purchasesSummary(from, to);
     const invoiceDate = this.dayRange(from, to);
-    const [saleLines, returnLines] = await Promise.all([
-      this.prisma.salesInvoiceLine.findMany({
+    const expenseDate = this.dayRange(from, to);
+    const posted = { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL, InvoiceStatus.PAID] as InvoiceStatus[] };
+
+    const [saleInvoices, returnRows, expenses] = await Promise.all([
+      this.prisma.salesInvoice.findMany({
         where: {
-          invoice: {
-            status: { not: 'CANCELLED' },
-            ...(invoiceDate ? { invoiceDate } : {}),
-          },
+          status: posted,
+          ...(invoiceDate ? { invoiceDate } : {}),
         },
-        include: { product: true },
+        include: {
+          customer: true,
+          lines: { include: { product: true } },
+        },
+        orderBy: { invoiceDate: 'asc' },
       }),
-      this.prisma.salesReturnLine.findMany({
-        where: invoiceDate ? { salesReturn: { returnDate: invoiceDate } } : undefined,
-        include: { product: true },
+      this.prisma.salesReturn.findMany({
+        where: invoiceDate ? { returnDate: invoiceDate } : undefined,
+        include: {
+          customer: true,
+          lines: { include: { product: true } },
+        },
+        orderBy: { returnDate: 'asc' },
+      }),
+      this.prisma.expense.findMany({
+        where: expenseDate ? { expenseDate } : undefined,
+        include: { category: true, account: true },
+        orderBy: { expenseDate: 'asc' },
       }),
     ]);
+
+    type ProfitLine = {
+      id: string;
+      kind: 'REVENUE' | 'RETURN' | 'COGS' | 'COGS_RETURN' | 'EXPENSE' | 'DISCOUNT' | 'TAX';
+      date: string;
+      reference: string;
+      party: string;
+      description: string;
+      quantity: number | null;
+      unitAmount: number | null;
+      amount: number;
+      side: 'IN' | 'OUT';
+    };
+
+    const lines: ProfitLine[] = [];
     let revenue = 0;
     let cogs = 0;
-    for (const line of saleLines) {
-      revenue += line.total;
-      cogs += line.quantity * (line.unitCost || line.product.costPrice);
+    let expenseTotal = 0;
+
+    for (const inv of saleInvoices) {
+      const date = inv.invoiceDate.toISOString();
+      for (const line of inv.lines) {
+        const unitCost = line.unitCost || line.product.costPrice || 0;
+        const cost = Math.round(line.quantity * unitCost * 100) / 100;
+        revenue += line.total;
+        cogs += cost;
+        lines.push({
+          id: `rev-${line.id}`,
+          kind: 'REVENUE',
+          date,
+          reference: inv.number,
+          party: inv.customer.name,
+          description: `${line.product.sku} — ${line.product.name}`,
+          quantity: line.quantity,
+          unitAmount: line.unitPrice,
+          amount: Math.round(line.total * 100) / 100,
+          side: 'IN',
+        });
+        lines.push({
+          id: `cogs-${line.id}`,
+          kind: 'COGS',
+          date,
+          reference: inv.number,
+          party: inv.customer.name,
+          description: `تكلفة ${line.product.sku} — ${line.product.name}`,
+          quantity: line.quantity,
+          unitAmount: unitCost,
+          amount: cost,
+          side: 'OUT',
+        });
+      }
+      if (inv.discount > 0.009) {
+        revenue -= inv.discount;
+        lines.push({
+          id: `disc-${inv.id}`,
+          kind: 'DISCOUNT',
+          date,
+          reference: inv.number,
+          party: inv.customer.name,
+          description: 'خصم الفاتورة',
+          quantity: null,
+          unitAmount: null,
+          amount: Math.round(inv.discount * 100) / 100,
+          side: 'OUT',
+        });
+      }
+      if (inv.tax > 0.009) {
+        revenue += inv.tax;
+        lines.push({
+          id: `tax-${inv.id}`,
+          kind: 'TAX',
+          date,
+          reference: inv.number,
+          party: inv.customer.name,
+          description: 'ضريبة الفاتورة',
+          quantity: null,
+          unitAmount: null,
+          amount: Math.round(inv.tax * 100) / 100,
+          side: 'IN',
+        });
+      }
     }
-    for (const line of returnLines) {
-      revenue -= line.total;
-      cogs -= line.quantity * line.product.costPrice;
+
+    for (const ret of returnRows) {
+      const date = ret.returnDate.toISOString();
+      for (const line of ret.lines) {
+        const unitCost = line.product.costPrice || 0;
+        const cost = Math.round(line.quantity * unitCost * 100) / 100;
+        revenue -= line.total;
+        cogs -= cost;
+        lines.push({
+          id: `ret-${line.id}`,
+          kind: 'RETURN',
+          date,
+          reference: ret.number,
+          party: ret.customer.name,
+          description: `مرتجع ${line.product.sku} — ${line.product.name}`,
+          quantity: line.quantity,
+          unitAmount: line.unitPrice,
+          amount: Math.round(line.total * 100) / 100,
+          side: 'OUT',
+        });
+        lines.push({
+          id: `cogsret-${line.id}`,
+          kind: 'COGS_RETURN',
+          date,
+          reference: ret.number,
+          party: ret.customer.name,
+          description: `استرداد تكلفة ${line.product.sku} — ${line.product.name}`,
+          quantity: line.quantity,
+          unitAmount: unitCost,
+          amount: cost,
+          side: 'IN',
+        });
+      }
     }
+
+    for (const expense of expenses) {
+      expenseTotal += expense.amount;
+      lines.push({
+        id: `exp-${expense.id}`,
+        kind: 'EXPENSE',
+        date: expense.expenseDate.toISOString(),
+        reference: expense.account.name,
+        party: expense.category.name,
+        description: expense.notes?.trim() || expense.category.name,
+        quantity: null,
+        unitAmount: null,
+        amount: Math.round(expense.amount * 100) / 100,
+        side: 'OUT',
+      });
+    }
+
+    lines.sort((a, b) => a.date.localeCompare(b.date) || a.kind.localeCompare(b.kind) || a.reference.localeCompare(b.reference));
+
     revenue = Math.round(revenue * 100) / 100;
     cogs = Math.round(cogs * 100) / 100;
+    expenseTotal = Math.round(expenseTotal * 100) / 100;
+    const grossProfit = Math.round((revenue - cogs) * 100) / 100;
+    const netProfit = Math.round((revenue - cogs - expenseTotal) * 100) / 100;
+
     return {
       salesTotal: sales.total,
       purchasesTotal: purchases.total,
@@ -98,7 +241,17 @@ export class ReportsService {
       purchasesCount: purchases.count,
       revenue,
       cogs,
-      netProfit: Math.round((revenue - cogs) * 100) / 100,
+      expenses: expenseTotal,
+      operatingProfit: grossProfit,
+      netProfit,
+      lines,
+      counts: {
+        revenue: lines.filter((row) => row.kind === 'REVENUE' || row.kind === 'TAX').length,
+        returns: lines.filter((row) => row.kind === 'RETURN').length,
+        cogs: lines.filter((row) => row.kind === 'COGS').length,
+        expenses: lines.filter((row) => row.kind === 'EXPENSE').length,
+        all: lines.length,
+      },
     };
   }
 

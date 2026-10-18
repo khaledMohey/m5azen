@@ -10,27 +10,144 @@ import {
   Badge, Button, Card, CardHeader, Empty, Input, Label, PageHeader, PrintHeader, SearchBox, Select, StatCard, StatGrid, StatusBadge, Table, Td, Th,
 } from '../components/ui';
 
-function ProfitView({ revenue, cogs, gross, invoiceDiff }: { revenue: number; cogs: number; gross: number; invoiceDiff: number }) {
-  const margin = revenue > 0 ? (gross / revenue) * 100 : 0;
+type ProfitLine = {
+  id: string;
+  kind: 'REVENUE' | 'RETURN' | 'COGS' | 'COGS_RETURN' | 'EXPENSE' | 'DISCOUNT' | 'TAX';
+  date: string;
+  reference: string;
+  party: string;
+  description: string;
+  quantity: number | null;
+  unitAmount: number | null;
+  amount: number;
+  side: 'IN' | 'OUT';
+};
+
+const PROFIT_KIND: Record<ProfitLine['kind'], { label: string; tone: 'emerald' | 'rose' | 'sky' | 'amber' | 'violet' | 'slate' }> = {
+  REVENUE: { label: 'إيراد بيع', tone: 'emerald' },
+  TAX: { label: 'ضريبة', tone: 'emerald' },
+  RETURN: { label: 'مرتجع بيع', tone: 'rose' },
+  DISCOUNT: { label: 'خصم فاتورة', tone: 'amber' },
+  COGS: { label: 'تكلفة بضاعة', tone: 'sky' },
+  COGS_RETURN: { label: 'استرداد تكلفة', tone: 'sky' },
+  EXPENSE: { label: 'مصروف', tone: 'rose' },
+};
+
+function ProfitView({
+  revenue,
+  cogs,
+  expenses,
+  gross,
+  net,
+  invoiceDiff,
+  lines,
+}: {
+  revenue: number;
+  cogs: number;
+  expenses: number;
+  gross: number;
+  net: number;
+  invoiceDiff: number;
+  lines: ProfitLine[];
+}) {
+  const [filter, setFilter] = useState<'all' | 'IN' | 'OUT' | 'REVENUE' | 'COGS' | 'EXPENSE'>('all');
+  const margin = revenue > 0 ? (net / revenue) * 100 : 0;
   const cogsPct = revenue > 0 ? Math.min(100, Math.max(0, (cogs / revenue) * 100)) : 0;
+  const expensePct = revenue > 0 ? Math.min(100, Math.max(0, (expenses / revenue) * 100)) : 0;
+  const profitPct = Math.max(0, 100 - cogsPct - expensePct);
+  const visible = lines.filter((row) => {
+    if (filter === 'all') return true;
+    if (filter === 'IN') return row.side === 'IN';
+    if (filter === 'OUT') return row.side === 'OUT';
+    if (filter === 'REVENUE') return row.kind === 'REVENUE' || row.kind === 'RETURN' || row.kind === 'TAX' || row.kind === 'DISCOUNT';
+    if (filter === 'COGS') return row.kind === 'COGS' || row.kind === 'COGS_RETURN';
+    return row.kind === 'EXPENSE';
+  });
+
   return (
     <div className="space-y-4">
       <StatGrid>
-        <StatCard label="صافي إيراد البيع" value={formatMoney(revenue)} hint="بعد المرتجعات" icon={ShoppingCart} tone="emerald" />
+        <StatCard label="صافي إيراد البيع" value={formatMoney(revenue)} hint="بعد المرتجعات والخصم والضريبة" icon={ShoppingCart} tone="emerald" />
         <StatCard label="تكلفة البضاعة المباعة" value={formatMoney(cogs)} hint="من تكلفة الصنف وقت البيع" icon={Coins} tone="sky" />
-        <StatCard label="مجمل الربح" value={<span className={gross >= 0 ? 'text-emerald-700' : 'text-rose-600'}>{formatMoney(gross)}</span>} hint={`فرق الفواتير ${formatMoney(invoiceDiff)}`} icon={TrendingUp} tone={gross >= 0 ? 'amber' : 'rose'} />
-        <StatCard label="هامش الربح" value={`${margin.toFixed(1)}%`} hint="مجمل الربح ÷ الإيراد" icon={Percent} tone="violet" />
+        <StatCard label="المصروفات" value={formatMoney(expenses)} hint="مصروفات الفترة" icon={Wallet} tone="rose" />
+        <StatCard label="صافي الربح" value={<span className={net >= 0 ? 'text-emerald-700' : 'text-rose-600'}>{formatMoney(net)}</span>} hint={`مجمل ${formatMoney(gross)} · فرق الفواتير ${formatMoney(invoiceDiff)}`} icon={TrendingUp} tone={net >= 0 ? 'amber' : 'rose'} />
       </StatGrid>
       <Card>
-        <CardHeader title="تركيب الإيراد" subtitle="كم من كل جنيه مبيعات يذهب للتكلفة وكم يبقى ربحًا" icon={TrendingUp} />
+        <CardHeader title="تركيب الربح" subtitle={`هامش صافي ${(Number.isFinite(margin) ? margin : 0).toFixed(1)}% من الإيراد`} icon={Percent} />
         <div className="flex h-5 overflow-hidden rounded-full bg-slate-100">
           <div className="h-full bg-gradient-to-l from-sky-400 to-sky-600 transition-all" style={{ width: `${cogsPct}%` }} />
-          <div className="h-full bg-gradient-to-l from-emerald-400 to-emerald-600 transition-all" style={{ width: `${Math.max(0, 100 - cogsPct)}%` }} />
+          <div className="h-full bg-gradient-to-l from-rose-400 to-rose-600 transition-all" style={{ width: `${expensePct}%` }} />
+          <div className="h-full bg-gradient-to-l from-emerald-400 to-emerald-600 transition-all" style={{ width: `${profitPct}%` }} />
         </div>
         <div className="mt-3 flex flex-wrap justify-between gap-3 text-sm">
           <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-sky-500" /> تكلفة البضاعة <b className="tabular-nums">{cogsPct.toFixed(1)}%</b></span>
-          <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-emerald-500" /> مجمل الربح <b className="tabular-nums">{(100 - cogsPct).toFixed(1)}%</b></span>
+          <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-rose-500" /> مصروفات <b className="tabular-nums">{expensePct.toFixed(1)}%</b></span>
+          <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-emerald-500" /> صافي الربح <b className="tabular-nums">{profitPct.toFixed(1)}%</b></span>
         </div>
+      </Card>
+      <Card>
+        <CardHeader
+          title="تفاصيل احتساب الربح"
+          subtitle={`${visible.length} حركة من أصل ${lines.length}`}
+          icon={FileSpreadsheet}
+          actions={(
+            <div className="flex flex-wrap gap-1">
+              {([
+                ['all', 'الكل'],
+                ['IN', 'دخل'],
+                ['OUT', 'خرج'],
+                ['REVENUE', 'إيراد ومرتجع'],
+                ['COGS', 'تكلفة'],
+                ['EXPENSE', 'مصروف'],
+              ] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setFilter(key)}
+                  className={`rounded-lg px-2.5 py-1 text-xs font-bold ${filter === key ? 'bg-brand-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+        />
+        {visible.length === 0 ? <Empty text="مفيش حركات في الفترة دي" /> : (
+          <Table>
+            <thead>
+              <tr>
+                <Th>التاريخ</Th>
+                <Th>النوع</Th>
+                <Th>المرجع</Th>
+                <Th>التفاصيل</Th>
+                <Th>الطرف</Th>
+                <Th>الكمية</Th>
+                <Th>سعر/تكلفة</Th>
+                <Th>المبلغ</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((row) => {
+                const meta = PROFIT_KIND[row.kind];
+                const signed = row.side === 'IN' ? row.amount : -row.amount;
+                return (
+                  <tr key={row.id} className={row.side === 'IN' ? 'row-debit' : 'row-credit'}>
+                    <Td className="whitespace-nowrap text-slate-500">{formatDate(row.date)}</Td>
+                    <Td><Badge tone={meta.tone}>{meta.label}</Badge></Td>
+                    <Td className="font-mono text-xs font-bold">{row.reference}</Td>
+                    <Td className="max-w-xs truncate text-slate-700">{row.description}</Td>
+                    <Td className="text-slate-600">{row.party}</Td>
+                    <Td className="tabular-nums">{row.quantity == null ? '—' : row.quantity}</Td>
+                    <Td className="tabular-nums">{row.unitAmount == null ? '—' : formatMoney(row.unitAmount)}</Td>
+                    <Td className={`whitespace-nowrap font-extrabold ${signed >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
+                      {signed >= 0 ? '+' : ''}{formatMoney(signed)}
+                    </Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </Table>
+        )}
       </Card>
     </div>
   );
@@ -57,7 +174,10 @@ type Profit = {
   purchasesCount: number;
   revenue?: number;
   cogs?: number;
+  expenses?: number;
+  operatingProfit?: number;
   netProfit?: number;
+  lines?: ProfitLine[];
 };
 
 type ProductRow = {
@@ -218,9 +338,37 @@ export function ReportsPage() {
       });
     } else if (tab === 'profit' && profit) {
       ws.addRow(['البند', 'القيمة']);
-      ws.addRow(['إجمالي المبيعات', profit.salesTotal]);
-      ws.addRow(['إجمالي المشتريات', profit.purchasesTotal]);
-      ws.addRow(['إجمالي الربح', profit.grossProfit]);
+      ws.addRow(['صافي الإيراد', profit.revenue ?? profit.salesTotal]);
+      ws.addRow(['تكلفة البضاعة', profit.cogs || 0]);
+      ws.addRow(['المصروفات', profit.expenses || 0]);
+      ws.addRow(['مجمل الربح', profit.operatingProfit ?? ((profit.revenue ?? profit.salesTotal) - (profit.cogs || 0))]);
+      ws.addRow(['صافي الربح', profit.netProfit ?? profit.grossProfit]);
+      ws.addRow([]);
+      const detail = wb.addWorksheet('تفاصيل الربح');
+      detail.columns = [
+        { header: 'التاريخ', key: 'date', width: 14 },
+        { header: 'النوع', key: 'kind', width: 16 },
+        { header: 'المرجع', key: 'reference', width: 14 },
+        { header: 'التفاصيل', key: 'description', width: 36 },
+        { header: 'الطرف', key: 'party', width: 22 },
+        { header: 'الكمية', key: 'quantity', width: 10 },
+        { header: 'سعر/تكلفة', key: 'unitAmount', width: 12 },
+        { header: 'المبلغ', key: 'amount', width: 14 },
+        { header: 'أثر', key: 'side', width: 10 },
+      ];
+      (profit.lines || []).forEach((row) => {
+        detail.addRow({
+          date: formatDate(row.date),
+          kind: PROFIT_KIND[row.kind].label,
+          reference: row.reference,
+          description: row.description,
+          party: row.party,
+          quantity: row.quantity ?? '',
+          unitAmount: row.unitAmount ?? '',
+          amount: row.side === 'IN' ? row.amount : -row.amount,
+          side: row.side === 'IN' ? 'دخل' : 'خرج',
+        });
+      });
     } else if (tab === 'products' && products) {
       const soldSheet = wb.addWorksheet('الأكثر مبيعاً');
       soldSheet.columns = [
@@ -611,8 +759,11 @@ export function ReportsPage() {
         <ProfitView
           revenue={profit.revenue ?? profit.salesTotal}
           cogs={profit.cogs || 0}
-          gross={profit.netProfit ?? profit.grossProfit}
+          expenses={profit.expenses || 0}
+          gross={profit.operatingProfit ?? ((profit.revenue ?? profit.salesTotal) - (profit.cogs || 0))}
+          net={profit.netProfit ?? profit.grossProfit}
           invoiceDiff={profit.grossProfit}
+          lines={profit.lines || []}
         />
       )}
 
