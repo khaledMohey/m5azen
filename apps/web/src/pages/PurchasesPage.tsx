@@ -18,6 +18,7 @@ type Party = { id: string; name: string };
 type Product = { id: string; name: string; sku: string; costPrice: number };
 const emptyPart = (): TenderPart => ({ methodId: '', amount: '' });
 type Line = {
+  id?: string;
   productId: string;
   quantity: number | '';
   unitCost: number | '';
@@ -39,6 +40,7 @@ type Invoice = {
   supplier: { id: string; name: string };
   warehouse: { id: string; name: string };
   lines: {
+    id: string;
     productId: string;
     quantity: number;
     discount?: number;
@@ -48,7 +50,7 @@ type Invoice = {
     total: number;
     product: { name: string; sku: string };
   }[];
-  payments?: { paymentMethod: string; amount: number }[];
+  payments?: { id: string; paymentMethod: string; amount: number }[];
 };
 
 const emptyLine = (): Line => ({
@@ -208,8 +210,9 @@ export function PurchasesPage() {
           tax: taxPercent,
           notes: form.notes || undefined,
           confirm: form.confirm,
-          payments: form.payments.filter((part) => num(part.amount) > 0).map((part) => ({ methodId: part.methodId, amount: num(part.amount) })),
+          payments: form.payments.filter((part) => num(part.amount) > 0).map((part) => ({ id: part.id, methodId: part.methodId, amount: num(part.amount) })),
           lines: filledLines.map((l) => ({
+            id: l.id,
             productId: l.productId,
             quantity: num(l.quantity),
             unitCost: num(l.unitCost),
@@ -249,12 +252,13 @@ export function PurchasesPage() {
       discount: inv.discount,
       tax: inv.subtotal - inv.discount > 0 ? Math.round((inv.tax / (inv.subtotal - inv.discount)) * 10000) / 100 : 0,
       payments: inv.payments?.length
-        ? inv.payments.map((payment) => ({ methodId: payment.paymentMethod, amount: payment.amount }))
+        ? inv.payments.map((payment) => ({ id: payment.id, methodId: payment.paymentMethod, amount: payment.amount }))
         : [emptyPart()],
       notes: '',
       confirm: true,
     });
     setLines(inv.lines.map((l) => ({
+      id: l.id,
       productId: l.productId,
       quantity: l.quantity,
       unitCost: l.unitCost,

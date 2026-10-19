@@ -19,7 +19,7 @@ type Product = { id: string; name: string; sku: string; salePrice: number; whole
 type StockRow = { productId: string; quantity: number; product: Product };
 const WALK_IN_NAME = 'عميل سريع';
 type Account = { id: string; name: string };
-type Line = { productId: string; quantity: number | ''; unitPrice: number | ''; discount: number | '' };
+type Line = { id?: string; productId: string; quantity: number | ''; unitPrice: number | ''; discount: number | '' };
 
 type Invoice = {
   id: string;
@@ -35,7 +35,7 @@ type Invoice = {
   taxRate?: number;
   customer: { id: string; name: string };
   warehouse: { id: string; name: string };
-  lines: { productId: string; quantity: number; unitPrice: number; discount?: number; total: number; product: { name: string; sku: string } }[];
+  lines: { id: string; productId: string; quantity: number; unitPrice: number; discount?: number; total: number; product: { name: string; sku: string } }[];
   receipts?: { id: string; number: string; amount: number; paymentMethod: string; receivedAt: string; note?: string | null }[];
 };
 
@@ -380,11 +380,12 @@ export function SalesPage() {
       warehouseId: form.warehouseId,
       discount: num(form.discount),
       taxRate: num(form.tax),
-      payments: form.payments.filter((part) => num(part.amount) > 0).map((part) => ({ methodId: part.methodId, amount: num(part.amount) })),
+      payments: form.payments.filter((part) => num(part.amount) > 0).map((part) => ({ id: part.id, methodId: part.methodId, amount: num(part.amount) })),
       notes: form.notes || undefined,
       confirm: form.confirm,
       shiftId: useShift && shift ? shift.id : undefined,
       lines: lines.filter((l) => l.productId).map((l) => ({
+        id: l.id,
         productId: l.productId,
         quantity: num(l.quantity),
         unitPrice: num(l.unitPrice),
@@ -450,12 +451,13 @@ export function SalesPage() {
       discount: inv.discount,
       tax: inv.taxRate || 0,
       payments: inv.receipts?.length
-        ? inv.receipts.map((receipt) => ({ methodId: receipt.paymentMethod, amount: receipt.amount }))
+        ? inv.receipts.map((receipt) => ({ id: receipt.id, methodId: receipt.paymentMethod, amount: receipt.amount }))
         : [emptyPart()],
       notes: inv.notes || '',
       confirm: true,
     });
     setLines(inv.lines.map((l) => ({
+      id: l.id,
       productId: l.productId,
       quantity: l.quantity,
       unitPrice: l.unitPrice,

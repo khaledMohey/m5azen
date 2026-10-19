@@ -1,9 +1,40 @@
 const STORAGE_KEY = 'm5azen_api_url';
 
 let settingsToken = '';
+let editToken = '';
+let editPrompt: Promise<void> | null = null;
 
 export function setSettingsToken(token: string) {
   settingsToken = token;
+}
+
+export function setEditToken(token: string) {
+  editToken = token;
+}
+
+function askForEditPassword() {
+  if (!editPrompt) {
+    editPrompt = new Promise<void>((resolve, reject) => {
+      const done = () => {
+        cleanup();
+        resolve();
+      };
+      const cancel = () => {
+        cleanup();
+        reject(new Error('تم إلغاء التعديل'));
+      };
+      const cleanup = () => {
+        window.removeEventListener('m5azen-edit-password', done);
+        window.removeEventListener('m5azen-edit-password-cancel', cancel);
+      };
+      window.addEventListener('m5azen-edit-password', done);
+      window.addEventListener('m5azen-edit-password-cancel', cancel);
+      window.dispatchEvent(new Event('m5azen-edit-password-ask'));
+    }).finally(() => {
+      editPrompt = null;
+    });
+  }
+  return editPrompt;
 }
 
 const LOCAL_HOST = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
@@ -31,7 +62,7 @@ export function productImageUrl(id: string, version?: string | null) {
 
 export async function api<T>(
   path: string,
-  options: RequestInit = {},
+  options: RequestInit & { editRetried?: boolean } = {},
 ): Promise<T> {
   const token = localStorage.getItem('m5azen_token');
   const headers: Record<string, string> = {
@@ -40,9 +71,11 @@ export async function api<T>(
   };
   if (token) headers.Authorization = `Bearer ${token}`;
   if (settingsToken) headers['x-settings-token'] = settingsToken;
+  if (editToken) headers['x-edit-token'] = editToken;
 
+  const { editRetried, ...request } = options;
   const res = await fetch(`${getApiBase()}${path.startsWith('/api') ? path : `/api${path}`}`, {
-    ...options,
+    ...request,
     headers,
   });
 
@@ -57,6 +90,10 @@ export async function api<T>(
   if (!res.ok) {
     const err = await res.json().catch(() => ({ message: 'حدث خطأ' }));
     const msg = Array.isArray(err.message) ? err.message.join(', ') : err.message;
+    if (res.status === 403 && msg === 'أدخل كلمة سر التعديل' && !editRetried) {
+      await askForEditPassword();
+      return api<T>(path, { ...options, editRetried: true });
+    }
     throw new Error(msg || 'حدث خطأ');
   }
 

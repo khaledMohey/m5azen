@@ -1,8 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { InvoiceStatus, StockMovementType } from '@prisma/client';
+import { InvoiceStatus, Prisma, StockMovementType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
-import { normalizeTenders, postSupplierTenders, reversePurchaseMoney, sumTenders, TenderInput } from '../cash/tenders';
+import { normalizeTenders, postSupplierTenders, reversePurchaseMoney, sumTenders, syncPurchaseTenders, TenderInput } from '../cash/tenders';
 
 @Injectable()
 export class PurchasesService {
@@ -239,7 +239,7 @@ export class PurchasesService {
     paidAmount?: number;
     payments?: TenderInput[];
     confirm?: boolean;
-    lines: { productId: string; quantity: number; unitCost: number; discount?: number; batchNumber?: string; expiryDate?: string }[];
+    lines: { id?: string; productId: string; quantity: number; unitCost: number; discount?: number; batchNumber?: string; expiryDate?: string }[];
   }) {
     const inv = await this.prisma.purchaseInvoice.findUnique({
       where: { id },
@@ -250,6 +250,7 @@ export class PurchasesService {
     if (!data.lines?.length) throw new BadRequestException('أضف بنوداً للفاتورة');
 
     const lines = data.lines.map((l) => ({
+      id: l.id,
       productId: l.productId,
       quantity: l.quantity,
       unitCost: l.unitCost,
@@ -269,32 +270,14 @@ export class PurchasesService {
     const alreadyPosted = inv.status !== InvoiceStatus.DRAFT;
     const posting = alreadyPosted || !!data.confirm;
     if (posting && paidAmount > 0 && !parts.length) throw new BadRequestException('قسّم المدفوع على طرق الدفع');
+    if (alreadyPosted) return this.revisePostedPurchase(id, inv, data, lines, parts, subtotal, discount, tax, total);
+
     const paymentNumbers: string[] = [];
     if (posting) {
       for (let i = 0; i < parts.length; i++) paymentNumbers.push(await this.sequence.next('payments', 'PAY'));
     }
 
     return this.prisma.$transaction(async (tx) => {
-      if (alreadyPosted) {
-        for (const line of inv.lines) {
-          const bal = await tx.stockBalance.findUnique({
-            where: { warehouseId_productId: { warehouseId: inv.warehouseId, productId: line.productId } },
-          });
-          if (!bal || bal.quantity < line.quantity) {
-            throw new BadRequestException('لا يمكن التعديل لأن كمية المخزون أقل من كمية الفاتورة');
-          }
-          await tx.stockBalance.update({ where: { id: bal.id }, data: { quantity: { decrement: line.quantity } } });
-        }
-        await tx.stockMovement.deleteMany({
-          where: { reference: inv.number, warehouseId: inv.warehouseId, type: StockMovementType.PURCHASE },
-        });
-        const due = inv.total - inv.paidAmount;
-        if (due !== 0) {
-          await tx.supplier.update({ where: { id: inv.supplierId }, data: { balance: { decrement: due } } });
-        }
-        await reversePurchaseMoney(tx, id, inv.payments);
-      }
-
       await tx.purchaseInvoiceLine.deleteMany({ where: { invoiceId: id } });
 
       if (posting) {
@@ -359,6 +342,166 @@ export class PurchasesService {
         include: { supplier: true, warehouse: true, lines: { include: { product: true } }, payments: true },
       });
     });
+  }
+
+  private async revisePostedPurchase(
+    id: string,
+    inv: {
+      number: string;
+      supplierId: string;
+      warehouseId: string;
+      total: number;
+      paidAmount: number;
+      invoiceDate: Date;
+      lines: { id: string; productId: string; quantity: number; unitCost: number }[];
+      payments: { id: string; number: string; amount: number; cashAccountId: string | null; paymentMethod: string; referenceNo: string | null }[];
+    },
+    data: { supplierId: string; warehouseId: string; invoiceDate?: string; notes?: string },
+    lines: { id?: string; productId: string; quantity: number; unitCost: number; discount: number; total: number; batchNumber: string | null; expiryDate: Date | null }[],
+    parts: TenderInput[],
+    subtotal: number,
+    discount: number,
+    tax: number,
+    total: number,
+  ) {
+    const replacements = parts.filter((part) => {
+      if (!part.id) return true;
+      const row = inv.payments.find((payment) => payment.id === part.id);
+      return !row || row.paymentMethod !== part.methodId;
+    }).length;
+    const newNumbers: string[] = [];
+    for (let i = 0; i < replacements; i++) newNumbers.push(await this.sequence.next('payments', 'PAY'));
+    return this.prisma.$transaction(async (tx) => {
+      await this.applyPurchaseStockDelta(tx, inv.warehouseId, data.warehouseId, inv.number, inv.lines, lines);
+      const paidAmount = await syncPurchaseTenders(tx, {
+        existing: inv.payments,
+        parts,
+        supplierId: data.supplierId,
+        purchaseInvoiceId: id,
+        invoiceNumber: inv.number,
+        newNumbers,
+      });
+      if (paidAmount > total + 0.009) throw new BadRequestException('المدفوع أكبر من إجمالي الفاتورة');
+      const oldDue = inv.total - inv.paidAmount;
+      const newDue = total - paidAmount;
+      if (data.supplierId === inv.supplierId) {
+        const delta = newDue - oldDue;
+        if (Math.abs(delta) >= 0.009) {
+          await tx.supplier.update({ where: { id: inv.supplierId }, data: { balance: { increment: delta } } });
+        }
+      } else {
+        if (Math.abs(oldDue) >= 0.009) {
+          await tx.supplier.update({ where: { id: inv.supplierId }, data: { balance: { decrement: oldDue } } });
+        }
+        if (Math.abs(newDue) >= 0.009) {
+          await tx.supplier.update({ where: { id: data.supplierId }, data: { balance: { increment: newDue } } });
+        }
+      }
+      const kept = new Set(lines.map((line) => line.id).filter((lineId): lineId is string => !!lineId));
+      for (const old of inv.lines) {
+        if (!kept.has(old.id)) await tx.purchaseInvoiceLine.delete({ where: { id: old.id } });
+      }
+      for (const line of lines) {
+        const previous = line.id ? inv.lines.find((row) => row.id === line.id) : undefined;
+        const row = {
+          productId: line.productId,
+          quantity: line.quantity,
+          unitCost: line.unitCost,
+          discount: line.discount,
+          total: line.total,
+          batchNumber: line.batchNumber,
+          expiryDate: line.expiryDate,
+        };
+        if (previous) await tx.purchaseInvoiceLine.update({ where: { id: previous.id }, data: row });
+        else await tx.purchaseInvoiceLine.create({ data: { invoiceId: id, ...row } });
+        if (!previous || Math.abs(previous.unitCost - line.unitCost) >= 0.009) {
+          await tx.product.update({ where: { id: line.productId }, data: { costPrice: line.unitCost } });
+        }
+      }
+      const methods = await tx.payment.findMany({ where: { purchaseInvoiceId: id }, select: { paymentMethod: true } });
+      const status = paidAmount >= total - 0.009
+        ? InvoiceStatus.PAID
+        : paidAmount > 0
+          ? InvoiceStatus.PARTIAL
+          : InvoiceStatus.CONFIRMED;
+      return tx.purchaseInvoice.update({
+        where: { id },
+        data: {
+          supplierId: data.supplierId,
+          warehouseId: data.warehouseId,
+          invoiceDate: data.invoiceDate ? new Date(data.invoiceDate) : inv.invoiceDate,
+          subtotal,
+          discount,
+          tax,
+          total,
+          paidAmount,
+          paymentMethod: methods.length === 1 ? methods[0].paymentMethod : '',
+          notes: data.notes,
+          status,
+        },
+        include: { supplier: true, warehouse: true, lines: { include: { product: true } }, payments: true },
+      });
+    });
+  }
+
+  private async applyPurchaseStockDelta(
+    tx: Prisma.TransactionClient,
+    oldWarehouse: string,
+    newWarehouse: string,
+    reference: string,
+    oldLines: { productId: string; quantity: number; unitCost: number }[],
+    newLines: { productId: string; quantity: number; unitCost: number }[],
+  ) {
+    if (oldWarehouse !== newWarehouse) {
+      for (const line of oldLines) {
+        const bal = await tx.stockBalance.findUnique({
+          where: { warehouseId_productId: { warehouseId: oldWarehouse, productId: line.productId } },
+        });
+        if (!bal || bal.quantity < line.quantity) throw new BadRequestException('لا يمكن نقل الفاتورة لأن كمية المخزون أقل من كمية الفاتورة');
+        await tx.stockBalance.update({ where: { id: bal.id }, data: { quantity: { decrement: line.quantity } } });
+      }
+      for (const line of newLines) {
+        await tx.stockBalance.upsert({
+          where: { warehouseId_productId: { warehouseId: newWarehouse, productId: line.productId } },
+          create: { warehouseId: newWarehouse, productId: line.productId, quantity: line.quantity },
+          update: { quantity: { increment: line.quantity } },
+        });
+      }
+      return;
+    }
+    const oldQty = new Map<string, number>();
+    const newQty = new Map<string, number>();
+    for (const line of oldLines) oldQty.set(line.productId, (oldQty.get(line.productId) || 0) + line.quantity);
+    for (const line of newLines) newQty.set(line.productId, (newQty.get(line.productId) || 0) + line.quantity);
+    for (const productId of new Set([...oldQty.keys(), ...newQty.keys()])) {
+      const delta = (newQty.get(productId) || 0) - (oldQty.get(productId) || 0);
+      if (Math.abs(delta) < 0.0001) continue;
+      if (delta < 0) {
+        const bal = await tx.stockBalance.findUnique({
+          where: { warehouseId_productId: { warehouseId: oldWarehouse, productId } },
+        });
+        if (!bal || bal.quantity < -delta) throw new BadRequestException('لا يمكن إنقاص الكمية لأن المخزون أقل من الفرق');
+        await tx.stockBalance.update({ where: { id: bal.id }, data: { quantity: { increment: delta } } });
+      } else {
+        await tx.stockBalance.upsert({
+          where: { warehouseId_productId: { warehouseId: oldWarehouse, productId } },
+          create: { warehouseId: oldWarehouse, productId, quantity: delta },
+          update: { quantity: { increment: delta } },
+        });
+      }
+      const sample = newLines.find((line) => line.productId === productId) || oldLines.find((line) => line.productId === productId);
+      await tx.stockMovement.create({
+        data: {
+          warehouseId: oldWarehouse,
+          productId,
+          type: StockMovementType.ADJUSTMENT,
+          quantity: delta,
+          unitCost: sample?.unitCost || 0,
+          reference,
+          note: 'تعديل فاتورة شراء',
+        },
+      });
+    }
   }
 
   async remove(id: string) {

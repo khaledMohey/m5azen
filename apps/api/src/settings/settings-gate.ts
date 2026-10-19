@@ -21,24 +21,40 @@ export function settingsPasswordMatches(password: string) {
   return safeEqual(password, expected);
 }
 
-export function signSettingsToken() {
+function signToken(purpose: string) {
   const exp = Date.now() + TTL_MS;
-  const body = Buffer.from(JSON.stringify({ purpose: 'settings', exp })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ purpose, exp })).toString('base64url');
   const sig = createHmac('sha256', secret()).update(body).digest('base64url');
   return `${body}.${sig}`;
 }
 
-export function verifySettingsToken(token?: string) {
+function readToken(token: string | undefined, purpose: string) {
   if (!token || !token.includes('.')) return false;
   const [body, sig] = token.split('.');
   const expected = createHmac('sha256', secret()).update(body).digest('base64url');
   if (!safeEqual(sig, expected)) return false;
   try {
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString()) as { purpose?: string; exp?: number };
-    return payload.purpose === 'settings' && typeof payload.exp === 'number' && payload.exp > Date.now();
+    return payload.purpose === purpose && typeof payload.exp === 'number' && payload.exp > Date.now();
   } catch {
     return false;
   }
+}
+
+export function signSettingsToken() {
+  return signToken('settings');
+}
+
+export function verifySettingsToken(token?: string) {
+  return readToken(token, 'settings');
+}
+
+export function signEditToken() {
+  return signToken('edit');
+}
+
+export function verifyEditToken(token?: string) {
+  return readToken(token, 'edit');
 }
 
 @Injectable()

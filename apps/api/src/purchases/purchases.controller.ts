@@ -6,6 +6,7 @@ import { PurchasesService } from './purchases.service';
 import { Roles } from '../common/guards';
 
 class LineDto {
+  @IsOptional() @IsString() id?: string;
   @IsString() productId!: string;
   @IsNumber() quantity!: number;
   @IsNumber() unitCost!: number;
@@ -15,6 +16,7 @@ class LineDto {
 }
 
 class TenderDto {
+  @IsOptional() @IsString() id?: string;
   @IsString() methodId!: string;
   @IsNumber() amount!: number;
   @IsOptional() @IsString() referenceNo?: string;

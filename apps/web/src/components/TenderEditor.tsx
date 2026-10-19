@@ -1,7 +1,7 @@
 import { Label, NumberInput, Select } from './ui';
 
 export type PayMethodOption = { id: string; name: string; kind: 'IMMEDIATE' | 'CHECK' };
-export type TenderPart = { methodId: string; amount: number | '' };
+export type TenderPart = { id?: string; methodId: string; amount: number | '' };
 
 export function TenderEditor({
   methods,

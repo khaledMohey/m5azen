@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import * as bcrypt from 'bcryptjs';
 import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
@@ -10,12 +11,27 @@ export class SettingsService {
   async getAll() {
     const settings = await this.prisma.setting.findMany();
     const map: Record<string, string> = {};
-    for (const s of settings) map[s.key] = s.value;
+    for (const s of settings) {
+      if (s.key === 'editPasswordHash') continue;
+      map[s.key] = s.value;
+    }
     return {
       companyName: map.companyName || 'نظام AK Tech لإدارة المخازن',
       apiUrl: map.apiUrl || '',
       ...map,
+      editPasswordSet: settings.some((row) => row.key === 'editPasswordHash' && row.value) ? '1' : '0',
     };
+  }
+
+  async setEditPassword(password: string) {
+    const editPasswordHash = await bcrypt.hash(password, 10);
+    await this.upsert('editPasswordHash', editPasswordHash);
+    return { ok: true };
+  }
+
+  async editPasswordHash() {
+    const row = await this.prisma.setting.findUnique({ where: { key: 'editPasswordHash' } });
+    return row?.value || '';
   }
 
   async upsert(key: string, value: string) {
@@ -28,6 +44,7 @@ export class SettingsService {
 
   async updateMany(data: Record<string, string>) {
     for (const [key, value] of Object.entries(data)) {
+      if (/password/i.test(key)) continue;
       await this.upsert(key, value);
     }
     return this.getAll();

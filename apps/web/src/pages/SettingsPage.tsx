@@ -23,10 +23,11 @@ export function SettingsPage() {
   const [userForm, setUserForm] = useState({ username: '', password: '', fullName: '', role: 'SALES', warehouseId: '' });
   const [backups, setBackups] = useState<string[]>([]);
   const [editingLook, setEditingLook] = useState(false);
-  const [busy, setBusy] = useState<'' | 'settings' | 'backup' | 'user' | 'password'>('');
+  const [busy, setBusy] = useState<'' | 'settings' | 'backup' | 'user' | 'password' | 'edit'>('');
   const [gate, setGate] = useState('');
   const [unlocked, setUnlocked] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' });
+  const [editPassword, setEditPassword] = useState({ next: '', confirm: '' });
 
   useEffect(() => {
     if (!unlocked) return;
@@ -80,6 +81,30 @@ export function SettingsPage() {
       toast.success('تم تغيير كلمة سر الدخول');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'تعذر تغيير كلمة السر');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function saveEditPassword() {
+    if (editPassword.next.length < 4) {
+      toast.error('كلمة سر التعديل 4 أحرف على الأقل');
+      return;
+    }
+    if (editPassword.next !== editPassword.confirm) {
+      toast.error('تأكيد كلمة السر غير مطابق');
+      return;
+    }
+    setBusy('edit');
+    try {
+      await api('/settings/edit-password', {
+        method: 'POST',
+        body: JSON.stringify({ password: editPassword.next }),
+      });
+      setEditPassword({ next: '', confirm: '' });
+      toast.success('تم حفظ كلمة سر التعديل');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'تعذر حفظ كلمة سر التعديل');
     } finally {
       setBusy('');
     }
@@ -242,6 +267,23 @@ export function SettingsPage() {
           <Button type="submit" disabled={busy === 'password'}>حفظ كلمة السر</Button>
         </form>
       </Card>
+
+      {isAdmin && (
+        <Card className="mt-4">
+          <CardHeader title="كلمة سر التعديل" subtitle="أي تعديل أو حذف في النظام يطلبها. لحد ما تحفظها التعديل يفضل مفتوح" icon={ShieldCheck} />
+          <form className="grid gap-3 sm:grid-cols-3" onSubmit={(e) => { e.preventDefault(); saveEditPassword(); }}>
+            <div>
+              <Label>كلمة السر</Label>
+              <Input type="password" value={editPassword.next} onChange={(e) => setEditPassword({ ...editPassword, next: e.target.value })} autoComplete="new-password" dir="ltr" />
+            </div>
+            <div>
+              <Label>تأكيد كلمة السر</Label>
+              <Input type="password" value={editPassword.confirm} onChange={(e) => setEditPassword({ ...editPassword, confirm: e.target.value })} autoComplete="new-password" dir="ltr" />
+            </div>
+            <Button type="submit" disabled={busy === 'edit'}>حفظ كلمة سر التعديل</Button>
+          </form>
+        </Card>
+      )}
 
       {isAdmin && (
         <Card className="mt-4">
