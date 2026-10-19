@@ -109,6 +109,8 @@ model User {
   purchaseInvoices PurchaseInvoice[] @relation("PurchaseCreatedBy")
   shifts           CashierShift[]
   warehouseLinks   UserWarehouse[]
+  periodsClosed    FiscalPeriod[]    @relation("PeriodClosedBy")
+  periodLogs       FiscalPeriodLog[] @relation("PeriodLogUser")
   orgNodeId        String?
   orgNode          OrgNode?          @relation(fields: [orgNodeId], references: [id], onDelete: SetNull)
 }
@@ -453,6 +455,8 @@ model SalesReturnLine {
   productId String
   quantity  Float
   unitPrice Float
+  /// تكلفة سطر البيع الأصلي. فاضي للمرتجع غير المربوط بفاتورة.
+  unitCost  Float?
   total     Float
 
   salesReturn SalesReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
@@ -530,6 +534,35 @@ model Setting {
   id    String @id @default(cuid())
   key   String @unique
   value String
+}
+
+enum PeriodAction {
+  CLOSE
+  REOPEN
+}
+
+model FiscalPeriod {
+  id         String    @id @default(cuid())
+  year       Int
+  month      Int
+  closedAt   DateTime?
+  closedById String?
+  closedBy   User?     @relation("PeriodClosedBy", fields: [closedById], references: [id])
+
+  @@unique([year, month])
+}
+
+model FiscalPeriodLog {
+  id        String       @id @default(cuid())
+  year      Int
+  month     Int
+  action    PeriodAction
+  reason    String?
+  userId    String
+  user      User         @relation("PeriodLogUser", fields: [userId], references: [id])
+  createdAt DateTime     @default(now())
+
+  @@index([year, month])
 }
 
 model Sequence {

@@ -1,14 +1,77 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, OnModuleInit } from '@nestjs/common';
 import { StockMovementType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
+import { assertPeriodsOpen } from '../settings/period-lock';
+
+function sliceCost(
+  lines: { productId: string; quantity: number; unitCost: number }[],
+  productId: string,
+  skip: number,
+  quantity: number,
+) {
+  let leftSkip = skip;
+  let left = quantity;
+  let costSum = 0;
+  let taken = 0;
+  for (const line of lines) {
+    if (line.productId !== productId) continue;
+    let available = line.quantity;
+    if (leftSkip > 0) {
+      const used = Math.min(leftSkip, available);
+      leftSkip -= used;
+      available -= used;
+    }
+    if (available <= 0) continue;
+    const take = Math.min(available, left);
+    costSum += take * (line.unitCost || 0);
+    taken += take;
+    left -= take;
+    if (left <= 0.0001) break;
+  }
+  if (taken <= 0.0001 || costSum <= 0) return null;
+  return Math.round((costSum / taken) * 10000) / 10000;
+}
 
 @Injectable()
-export class ReturnsService {
+export class ReturnsService implements OnModuleInit {
   constructor(
     private prisma: PrismaService,
     private sequence: SequenceService,
   ) {}
+
+  async onModuleInit() {
+    const pending = await this.prisma.salesReturnLine.findFirst({
+      where: { OR: [{ unitCost: null }, { unitCost: 0 }], salesReturn: { salesInvoiceId: { not: null } } },
+      select: { id: true },
+    });
+    if (!pending) return;
+    const returns = await this.prisma.salesReturn.findMany({
+      where: { salesInvoiceId: { not: null } },
+      include: { lines: true, salesInvoice: { include: { lines: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: [...new Set(returns.flatMap((row) => row.lines.map((line) => line.productId)))] } },
+      select: { id: true, costPrice: true },
+    });
+    const currentCost = new Map(products.map((product) => [product.id, product.costPrice || 0]));
+    const skip = new Map<string, number>();
+    for (const row of returns) {
+      for (const line of row.lines) {
+        const key = `${row.salesInvoiceId}:${line.productId}`;
+        const computed = sliceCost(row.salesInvoice?.lines || [], line.productId, skip.get(key) || 0, line.quantity) ?? currentCost.get(line.productId) ?? 0;
+        const unitCost = line.unitCost && line.unitCost > 0 ? line.unitCost : computed;
+        skip.set(key, (skip.get(key) || 0) + line.quantity);
+        if (line.unitCost === unitCost) continue;
+        await this.prisma.salesReturnLine.update({ where: { id: line.id }, data: { unitCost } });
+        await this.prisma.stockMovement.updateMany({
+          where: { reference: row.number, productId: line.productId, type: StockMovementType.SALE_RETURN },
+          data: { unitCost },
+        });
+      }
+    }
+  }
 
   listSalesReturns() {
     return this.prisma.salesReturn.findMany({
@@ -198,6 +261,7 @@ export class ReturnsService {
     lines: { productId: string; quantity: number; unitPrice: number }[];
   }) {
     if (!data.lines?.length) throw new BadRequestException('أضف بنوداً');
+    await assertPeriodsOpen(this.prisma, new Date());
 
     const returnable = await this.salesReturnable(data.customerId);
     const pool = data.salesInvoiceId
@@ -218,10 +282,41 @@ export class ReturnsService {
     }
 
     const number = await this.sequence.next('sales_return', 'SR');
-    const lines = data.lines.map((l) => ({
-      ...l,
-      total: l.quantity * l.unitPrice,
-    }));
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: data.lines.map((line) => line.productId) } },
+      select: { id: true, costPrice: true },
+    });
+    const currentCost = new Map(products.map((product) => [product.id, product.costPrice || 0]));
+    let invoiceLines: { productId: string; quantity: number; unitCost: number }[] = [];
+    const skip = new Map<string, number>();
+    if (data.salesInvoiceId) {
+      const invoice = await this.prisma.salesInvoice.findUnique({
+        where: { id: data.salesInvoiceId },
+        include: { lines: true },
+      });
+      if (!invoice) throw new BadRequestException('فاتورة البيع غير موجودة');
+      invoiceLines = invoice.lines;
+      const prior = await this.prisma.salesReturn.findMany({
+        where: { salesInvoiceId: data.salesInvoiceId },
+        include: { lines: true },
+      });
+      for (const row of prior) {
+        for (const line of row.lines) skip.set(line.productId, (skip.get(line.productId) || 0) + line.quantity);
+      }
+    }
+    const lines = data.lines.map((line) => {
+      const fromInvoice = data.salesInvoiceId
+        ? sliceCost(invoiceLines, line.productId, skip.get(line.productId) || 0, line.quantity)
+        : null;
+      if (data.salesInvoiceId) skip.set(line.productId, (skip.get(line.productId) || 0) + line.quantity);
+      return {
+        productId: line.productId,
+        quantity: line.quantity,
+        unitPrice: line.unitPrice,
+        unitCost: fromInvoice ?? currentCost.get(line.productId) ?? 0,
+        total: line.quantity * line.unitPrice,
+      };
+    });
     const total = lines.reduce((s, l) => s + l.total, 0);
 
     return this.prisma.$transaction(async (tx) => {
@@ -246,7 +341,7 @@ export class ReturnsService {
             productId: line.productId,
             type: StockMovementType.SALE_RETURN,
             quantity: line.quantity,
-            unitCost: line.unitPrice,
+            unitCost: line.unitCost,
             reference: number,
           },
         });
@@ -282,6 +377,7 @@ export class ReturnsService {
     lines: { productId: string; quantity: number; unitCost: number }[];
   }) {
     if (!data.lines?.length) throw new BadRequestException('أضف بنوداً');
+    await assertPeriodsOpen(this.prisma, new Date());
 
     const returnable = await this.purchasesReturnable(data.supplierId);
     const pool = data.purchaseInvoiceId

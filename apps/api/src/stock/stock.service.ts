@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { InvoiceStatus, StockMovementType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
+import { assertPeriodsOpen } from '../settings/period-lock';
 
 const CONFIRMED: InvoiceStatus[] = [
   InvoiceStatus.CONFIRMED,
@@ -141,6 +142,7 @@ export class StockService {
   ) {
     const mov = await this.prisma.stockMovement.findUnique({ where: { id } });
     if (!mov) throw new NotFoundException('الحركة غير موجودة');
+    await assertPeriodsOpen(this.prisma, mov.createdAt);
 
     return this.prisma.$transaction(async (tx) => {
       if (data.quantity !== undefined && data.quantity !== mov.quantity) {
@@ -178,6 +180,7 @@ export class StockService {
   async deleteMovement(id: string) {
     const mov = await this.prisma.stockMovement.findUnique({ where: { id } });
     if (!mov) throw new NotFoundException('الحركة غير موجودة');
+    await assertPeriodsOpen(this.prisma, mov.createdAt);
 
     return this.prisma.$transaction(async (tx) => {
       const bal = await tx.stockBalance.findUnique({
@@ -212,6 +215,7 @@ export class StockService {
       include: { invoice: true },
     });
     if (!line) throw new NotFoundException('دفعة الشراء غير موجودة');
+    await assertPeriodsOpen(this.prisma, line.invoice.invoiceDate);
 
     const unitCost = data.unitCost !== undefined ? data.unitCost : line.unitCost;
     const total = line.quantity * unitCost - line.discount;
@@ -273,6 +277,7 @@ export class StockService {
       include: { invoice: { include: { lines: true } } },
     });
     if (!line) throw new NotFoundException('دفعة الشراء غير موجودة');
+    await assertPeriodsOpen(this.prisma, line.invoice.invoiceDate);
     if (line.invoice.lines.length <= 1) {
       throw new BadRequestException('لا يمكن حذف البند الوحيد في الفاتورة — احذف الفاتورة من المشتريات');
     }
@@ -347,6 +352,7 @@ export class StockService {
       throw new BadRequestException('المخزن المصدر والهدف يجب أن يختلفا');
     }
     if (!data.lines.length) throw new BadRequestException('أضف أصنافاً للتحويل');
+    await assertPeriodsOpen(this.prisma, new Date());
 
     const number = await this.sequence.next('stock_transfer', 'TR');
     return this.prisma.$transaction(async (tx) => {
@@ -434,6 +440,7 @@ export class StockService {
     lines: { productId: string; quantity: number }[];
   }) {
     if (!data.lines?.length) throw new BadRequestException('أضف أصنافاً');
+    await assertPeriodsOpen(this.prisma, new Date());
     return this.prisma.$transaction(async (tx) => {
       let count = 0;
       for (const line of data.lines) {

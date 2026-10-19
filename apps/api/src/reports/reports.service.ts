@@ -3,6 +3,13 @@ import { InvoiceStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import * as ExcelJS from 'exceljs';
 
+function sliceInvoiceCost(lines: { productId: string; quantity: number; unitCost: number }[], productId: string) {
+  const rows = lines.filter((line) => line.productId === productId && line.quantity > 0);
+  const quantity = rows.reduce((sum, line) => sum + line.quantity, 0);
+  if (quantity <= 0) return null;
+  return Math.round(rows.reduce((sum, line) => sum + line.quantity * (line.unitCost || 0), 0) / quantity * 10000) / 10000;
+}
+
 @Injectable()
 export class ReportsService {
   constructor(private prisma: PrismaService) {}
@@ -82,6 +89,7 @@ export class ReportsService {
         where: invoiceDate ? { returnDate: invoiceDate } : undefined,
         include: {
           customer: true,
+          salesInvoice: { include: { lines: true } },
           lines: { include: { product: true } },
         },
         orderBy: { returnDate: 'asc' },
@@ -178,7 +186,10 @@ export class ReportsService {
     for (const ret of returnRows) {
       const date = ret.returnDate.toISOString();
       for (const line of ret.lines) {
-        const unitCost = line.product.costPrice || 0;
+        const fromInvoice = !line.unitCost && ret.salesInvoice
+          ? sliceInvoiceCost(ret.salesInvoice.lines, line.productId)
+          : 0;
+        const unitCost = line.unitCost || fromInvoice || line.product.costPrice || 0;
         const cost = Math.round(line.quantity * unitCost * 100) / 100;
         revenue -= line.total;
         cogs -= cost;

@@ -1,5 +1,5 @@
-import { BadRequestException, Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
-import { IsObject, IsString, MinLength } from 'class-validator';
+import { BadRequestException, Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import { IsNumber, IsObject, IsString, MinLength } from 'class-validator';
 import { Role } from '@prisma/client';
 import { SettingsService } from './settings.service';
 import { Roles } from '../common/guards';
@@ -17,6 +17,15 @@ class UnlockSettingsDto {
 
 class EditPasswordDto {
   @IsString() @MinLength(4) password!: string;
+}
+
+class ClosePeriodDto {
+  @IsNumber() year!: number;
+  @IsNumber() month!: number;
+}
+
+class ReopenPeriodDto extends ClosePeriodDto {
+  @IsString() @MinLength(3) reason!: string;
 }
 
 @Controller('settings')
@@ -44,6 +53,27 @@ export class SettingsController {
     if (!process.env.SETTINGS_PASSWORD) throw new BadRequestException('تعذر فتح الإعدادات');
     if (!settingsPasswordMatches(dto.password)) throw new BadRequestException('كلمة سر الإعدادات غير صحيحة');
     return { token: signSettingsToken() };
+  }
+
+  @Get('periods')
+  @Roles(Role.ADMIN)
+  @UseGuards(SettingsGateGuard)
+  listPeriods() {
+    return this.service.listPeriods();
+  }
+
+  @Post('periods/close')
+  @Roles(Role.ADMIN)
+  @UseGuards(SettingsGateGuard)
+  closePeriod(@Body() dto: ClosePeriodDto, @Req() req: { user: { userId: string } }) {
+    return this.service.closePeriod(dto.year, dto.month, req.user.userId);
+  }
+
+  @Post('periods/reopen')
+  @Roles(Role.ADMIN)
+  @UseGuards(SettingsGateGuard)
+  reopenPeriod(@Body() dto: ReopenPeriodDto, @Req() req: { user: { userId: string } }) {
+    return this.service.reopenPeriod(dto.year, dto.month, dto.reason, req.user.userId);
   }
 
   @Get()

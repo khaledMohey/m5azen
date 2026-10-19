@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { CashDirection, InvoiceStatus, PayMethodKind } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
+import { assertPeriodsOpen } from '../settings/period-lock';
 
 @Injectable()
 export class CashService {
@@ -51,6 +52,7 @@ export class CashService {
     createdById?: string;
   }) {
     if (data.amount <= 0) throw new BadRequestException('المبلغ يجب أن يكون أكبر من صفر');
+    await assertPeriodsOpen(this.prisma, new Date());
     return this.prisma.$transaction(async (tx) => {
       const account = await tx.cashAccount.findUnique({ where: { id: data.accountId } });
       if (!account) throw new NotFoundException('حساب الخزنة غير موجود');
@@ -176,6 +178,11 @@ export class CashService {
       left -= pay;
       if (data.salesInvoiceId) break;
     }
+    await assertPeriodsOpen(
+      this.prisma,
+      new Date(),
+      ...slices.map((slice) => openInvoices.find((inv) => inv.id === slice.invoiceId)?.invoiceDate),
+    );
 
     const receiptCount = slices.length + (left > 0.001 ? 1 : 0);
     const numbers: string[] = [];
@@ -313,6 +320,14 @@ export class CashService {
     note?: string;
   }) {
     if (data.amount <= 0) throw new BadRequestException('المبلغ يجب أن يكون أكبر من صفر');
+    await assertPeriodsOpen(this.prisma, new Date());
+    if (data.purchaseInvoiceId) {
+      const linked = await this.prisma.purchaseInvoice.findUnique({
+        where: { id: data.purchaseInvoiceId },
+        select: { invoiceDate: true },
+      });
+      if (linked) await assertPeriodsOpen(this.prisma, linked.invoiceDate);
+    }
     const method = await this.prisma.payMethod.findUnique({ where: { id: data.methodId } });
     if (!method || !method.isActive) throw new BadRequestException('طريقة الدفع غير موجودة');
     const number = await this.sequence.next('payments', 'PAY');

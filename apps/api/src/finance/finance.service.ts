@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { CheckDirection, CheckStatus, PayMethodKind, ShiftStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { assertPeriodsOpen } from '../settings/period-lock';
 
 @Injectable()
 export class FinanceService {
@@ -88,6 +89,7 @@ export class FinanceService {
     shiftId?: string | null;
   }) {
     if (data.amount <= 0) throw new BadRequestException('المبلغ لازم يكون أكبر من صفر');
+    await assertPeriodsOpen(this.prisma, data.expenseDate || new Date());
     let accountId = data.accountId || '';
     let paymentMethod = data.methodId || data.paymentMethod || '';
     if (data.methodId) {
@@ -137,7 +139,7 @@ export class FinanceService {
     });
   }
 
-  createCheck(data: {
+  async createCheck(data: {
     direction: CheckDirection;
     checkNumber: string;
     bankName: string;
@@ -149,6 +151,7 @@ export class FinanceService {
     notes?: string;
   }) {
     if (data.amount <= 0) throw new BadRequestException('مبلغ الشيك لازم يكون أكبر من صفر');
+    await assertPeriodsOpen(this.prisma, data.issueDate || new Date());
     return this.prisma.bankCheck.create({
       data: {
         direction: data.direction,
@@ -169,6 +172,15 @@ export class FinanceService {
     const check = await this.prisma.bankCheck.findUnique({ where: { id } });
     if (!check) throw new NotFoundException('الشيك غير موجود');
     if (check.status === status) return check;
+    await assertPeriodsOpen(this.prisma, new Date());
+    if (status === CheckStatus.BOUNCED && check.salesInvoiceId) {
+      const inv = await this.prisma.salesInvoice.findUnique({ where: { id: check.salesInvoiceId }, select: { invoiceDate: true } });
+      if (inv) await assertPeriodsOpen(this.prisma, inv.invoiceDate);
+    }
+    if (status === CheckStatus.BOUNCED && check.purchaseInvoiceId) {
+      const inv = await this.prisma.purchaseInvoice.findUnique({ where: { id: check.purchaseInvoiceId }, select: { invoiceDate: true } });
+      if (inv) await assertPeriodsOpen(this.prisma, inv.invoiceDate);
+    }
 
     let targetAccount = check.accountId || undefined;
     let settledMethodId = '';

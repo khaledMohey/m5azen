@@ -1,17 +1,21 @@
 import { useEffect, useState } from 'react';
-import { Building2, DatabaseBackup, FileArchive, Save, Server, ShieldCheck, UserPlus, Users } from 'lucide-react';
+import { Building2, DatabaseBackup, FileArchive, Lock, Save, Server, ShieldCheck, UserPlus, Users } from 'lucide-react';
 import { api, getApiBase, setApiBase, setSettingsToken } from '../lib/api';
 import { ROLE_LABELS } from '../lib/nav';
 import { useAuth } from '../lib/auth';
-import { useToast } from '../lib/feedback';
+import { useConfirm, useToast } from '../lib/feedback';
 import { AppearanceSettings } from '../components/AppearanceSettings';
 import { Badge, Button, Card, CardHeader, Empty, Input, Label, PageHeader, Select, Table, Td, Th, type Tone } from '../components/ui';
 
 const ROLE_TONE: Record<string, Tone> = { ADMIN: 'brand', ACCOUNTANT: 'violet', WAREHOUSE: 'amber', SALES: 'emerald' };
 
+type PeriodRow = { year: number; month: number; label: string; closed: boolean; closedAt: string | null; closedBy: string };
+type PeriodLog = { id: string; label: string; action: 'CLOSE' | 'REOPEN'; reason: string; userName: string; createdAt: string };
+
 export function SettingsPage() {
   const { user } = useAuth();
   const toast = useToast();
+  const confirm = useConfirm();
   const isAdmin = user?.role === 'ADMIN';
   const [companyName, setCompanyName] = useState('');
   const [taxNumber, setTaxNumber] = useState('');
@@ -23,11 +27,15 @@ export function SettingsPage() {
   const [userForm, setUserForm] = useState({ username: '', password: '', fullName: '', role: 'SALES', warehouseId: '' });
   const [backups, setBackups] = useState<string[]>([]);
   const [editingLook, setEditingLook] = useState(false);
-  const [busy, setBusy] = useState<'' | 'settings' | 'backup' | 'user' | 'password' | 'edit'>('');
+  const [busy, setBusy] = useState<'' | 'settings' | 'backup' | 'user' | 'password' | 'edit' | 'period'>('');
   const [gate, setGate] = useState('');
   const [unlocked, setUnlocked] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' });
   const [editPassword, setEditPassword] = useState({ next: '', confirm: '' });
+  const [periods, setPeriods] = useState<PeriodRow[]>([]);
+  const [periodLog, setPeriodLog] = useState<PeriodLog[]>([]);
+  const [reopenKey, setReopenKey] = useState('');
+  const [reopenReason, setReopenReason] = useState('');
 
   useEffect(() => {
     if (!unlocked) return;
@@ -40,6 +48,10 @@ export function SettingsPage() {
     if (isAdmin) {
       api<typeof users>('/users').then(setUsers).catch(() => setUsers([]));
       api<{ id: string; name: string }[]>('/warehouses').then(setWarehouses).catch(() => setWarehouses([]));
+      api<{ periods: PeriodRow[]; log: PeriodLog[] }>('/settings/periods').then((res) => {
+        setPeriods(res.periods);
+        setPeriodLog(res.log);
+      }).catch(() => undefined);
     }
     api<string[]>('/settings/backups').then(setBackups).catch(() => setBackups([]));
   }, [user?.role, unlocked]);
@@ -105,6 +117,53 @@ export function SettingsPage() {
       toast.success('تم حفظ كلمة سر التعديل');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'تعذر حفظ كلمة سر التعديل');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function closePeriod(row: PeriodRow) {
+    const ok = await confirm({
+      title: `قفل ${row.label}`,
+      message: 'فواتير ومصروفات ومخزون الشهر ده هتقف لحد ما يتفتح تاني بسبب.',
+      confirmLabel: 'قفل الشهر',
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy('period');
+    try {
+      const res = await api<{ periods: PeriodRow[]; log: PeriodLog[] }>('/settings/periods/close', {
+        method: 'POST',
+        body: JSON.stringify({ year: row.year, month: row.month }),
+      });
+      setPeriods(res.periods);
+      setPeriodLog(res.log);
+      toast.success(`تم قفل ${row.label}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'تعذر قفل الشهر');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function reopenPeriod(row: PeriodRow) {
+    if (reopenReason.trim().length < 3) {
+      toast.error('اكتب سبب فتح الشهر');
+      return;
+    }
+    setBusy('period');
+    try {
+      const res = await api<{ periods: PeriodRow[]; log: PeriodLog[] }>('/settings/periods/reopen', {
+        method: 'POST',
+        body: JSON.stringify({ year: row.year, month: row.month, reason: reopenReason.trim() }),
+      });
+      setPeriods(res.periods);
+      setPeriodLog(res.log);
+      setReopenKey('');
+      setReopenReason('');
+      toast.success(`تم فتح ${row.label}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'تعذر فتح الشهر');
     } finally {
       setBusy('');
     }
@@ -282,6 +341,59 @@ export function SettingsPage() {
             </div>
             <Button type="submit" disabled={busy === 'edit'}>حفظ كلمة سر التعديل</Button>
           </form>
+        </Card>
+      )}
+
+      {isAdmin && (
+        <Card className="mt-4">
+          <CardHeader title="الفترات المحاسبية" subtitle="قفل شهر بيمنع تعديل مستنداته. الفتح يتسجل بالسبب" icon={Lock} />
+          {periods.length === 0 ? <Empty text="لا توجد فترات" /> : (
+            <ul className="max-h-96 space-y-2 overflow-y-auto">
+              {periods.map((row) => {
+                const key = `${row.year}-${row.month}`;
+                return (
+                  <li key={key} className="rounded-xl border border-slate-100 px-3 py-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="font-bold text-slate-800">{row.label}</div>
+                        <div className="text-xs text-slate-500">
+                          {row.closed ? `مقفول${row.closedBy ? ` بواسطة ${row.closedBy}` : ''}` : 'مفتوح'}
+                        </div>
+                      </div>
+                      {row.closed ? (
+                        <Button type="button" variant="secondary" disabled={busy === 'period'} onClick={() => { setReopenKey(key); setReopenReason(''); }}>فتح</Button>
+                      ) : (
+                        <Button type="button" variant="danger" disabled={busy === 'period'} onClick={() => closePeriod(row)}>قفل</Button>
+                      )}
+                    </div>
+                    {row.closed && reopenKey === key && (
+                      <form className="mt-2 flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); reopenPeriod(row); }}>
+                        <div className="min-w-56 flex-1">
+                          <Label>سبب الفتح</Label>
+                          <Input value={reopenReason} onChange={(e) => setReopenReason(e.target.value)} />
+                        </div>
+                        <Button type="submit" disabled={busy === 'period'}>تأكيد الفتح</Button>
+                      </form>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {periodLog.length > 0 && (
+            <div className="mt-4">
+              <div className="mb-2 text-sm font-bold text-slate-700">سجل القفل والفتح</div>
+              <ul className="max-h-48 space-y-1.5 overflow-y-auto text-sm">
+                {periodLog.map((row) => (
+                  <li key={row.id} className="rounded-lg bg-slate-50 px-3 py-2 text-slate-600">
+                    <span className="font-bold text-slate-800">{row.action === 'CLOSE' ? 'قفل' : 'فتح'} {row.label}</span>
+                    {' — '}{row.userName}
+                    {row.reason ? ` — ${row.reason}` : ''}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </Card>
       )}
 

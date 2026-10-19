@@ -3,6 +3,7 @@ import { InvoiceStatus, Prisma, StockMovementType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
 import { normalizeTenders, postCustomerTenders, reverseSaleMoney, sumTenders, syncSaleTenders, TenderInput } from '../cash/tenders';
+import { assertPeriodsOpen } from '../settings/period-lock';
 
 @Injectable()
 export class SalesService {
@@ -55,6 +56,7 @@ export class SalesService {
     lines: { productId: string; quantity: number; unitPrice: number; discount?: number }[];
   }) {
     if (!data.lines?.length) throw new BadRequestException('أضف بنوداً للفاتورة');
+    await assertPeriodsOpen(this.prisma, data.invoiceDate || new Date());
     if (data.shiftId) await this.assertOpenShift(data.shiftId);
     const number = await this.sequence.next('sales', 'SAL');
     const parts = normalizeTenders(data.payments);
@@ -161,6 +163,7 @@ export class SalesService {
     if (inv.status !== InvoiceStatus.DRAFT) {
       throw new BadRequestException('الفاتورة ليست مسودة');
     }
+    await assertPeriodsOpen(this.prisma, inv.invoiceDate);
     const parts = normalizeTenders(payments);
     const paidAmount = parts.length ? sumTenders(parts) : 0;
     if (paidAmount > inv.total + 0.009) throw new BadRequestException('المدفوع أكبر من إجمالي الفاتورة');
@@ -247,6 +250,7 @@ export class SalesService {
       include: { lines: true, receipts: true, returns: true },
     });
     if (!inv) throw new NotFoundException('فاتورة البيع غير موجودة');
+    await assertPeriodsOpen(this.prisma, inv.invoiceDate, data.invoiceDate);
     if (inv.returns.length) throw new BadRequestException('لا يمكن تعديل فاتورة عليها مرتجعات');
     if (!data.lines?.length) throw new BadRequestException('أضف بنوداً للفاتورة');
     if (data.shiftId) await this.assertOpenShift(data.shiftId);
@@ -530,6 +534,7 @@ export class SalesService {
       include: { lines: true, receipts: true, returns: true },
     });
     if (!inv) throw new NotFoundException('فاتورة البيع غير موجودة');
+    await assertPeriodsOpen(this.prisma, inv.invoiceDate);
     if (inv.returns.length) {
       throw new BadRequestException('لا يمكن حذف فاتورة عليها مرتجعات');
     }

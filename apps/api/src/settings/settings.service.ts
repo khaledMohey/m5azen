@@ -1,8 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
+import { periodLabel, periodParts } from './period-lock';
 
 @Injectable()
 export class SettingsService {
@@ -70,6 +71,102 @@ export class SettingsService {
     const dest = join(backupDir, `m5azen-${stamp}.db`);
     copyFileSync(dbPath, dest);
     return { ok: true, path: dest, fileName: `m5azen-${stamp}.db` };
+  }
+
+  async listPeriods() {
+    const now = periodParts(new Date());
+    const months: { year: number; month: number }[] = [];
+    let year = now.year;
+    let month = now.month;
+    for (let i = 0; i < 18; i++) {
+      months.push({ year, month });
+      month -= 1;
+      if (month === 0) {
+        month = 12;
+        year -= 1;
+      }
+    }
+    const closed = await this.prisma.fiscalPeriod.findMany({
+      where: { closedAt: { not: null } },
+      include: { closedBy: { select: { fullName: true } } },
+    });
+    for (const row of closed) {
+      if (!months.some((item) => item.year === row.year && item.month === row.month)) {
+        months.push({ year: row.year, month: row.month });
+      }
+    }
+    const closedMap = new Map(closed.map((row) => [`${row.year}-${row.month}`, row]));
+    const log = await this.prisma.fiscalPeriodLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 40,
+      include: { user: { select: { fullName: true } } },
+    });
+    return {
+      periods: months.map((item) => {
+        const row = closedMap.get(`${item.year}-${item.month}`);
+        return {
+          year: item.year,
+          month: item.month,
+          label: periodLabel(item.year, item.month),
+          closed: !!row?.closedAt,
+          closedAt: row?.closedAt || null,
+          closedBy: row?.closedBy?.fullName || '',
+        };
+      }),
+      log: log.map((row) => ({
+        id: row.id,
+        label: periodLabel(row.year, row.month),
+        action: row.action,
+        reason: row.reason || '',
+        userName: row.user.fullName,
+        createdAt: row.createdAt,
+      })),
+    };
+  }
+
+  async closePeriod(year: number, month: number, userId: string) {
+    this.assertMonth(year, month);
+    const now = periodParts(new Date());
+    if (year > now.year || (year === now.year && month > now.month)) {
+      throw new BadRequestException('الشهر لسه ما جاش');
+    }
+    const existing = await this.prisma.fiscalPeriod.findUnique({ where: { year_month: { year, month } } });
+    if (existing?.closedAt) throw new BadRequestException('الشهر مقفول بالفعل');
+    await this.prisma.$transaction([
+      this.prisma.fiscalPeriod.upsert({
+        where: { year_month: { year, month } },
+        create: { year, month, closedAt: new Date(), closedById: userId },
+        update: { closedAt: new Date(), closedById: userId },
+      }),
+      this.prisma.fiscalPeriodLog.create({
+        data: { year, month, action: 'CLOSE', userId },
+      }),
+    ]);
+    return this.listPeriods();
+  }
+
+  async reopenPeriod(year: number, month: number, reason: string, userId: string) {
+    this.assertMonth(year, month);
+    const text = reason.trim();
+    if (text.length < 3) throw new BadRequestException('اكتب سبب فتح الشهر');
+    const existing = await this.prisma.fiscalPeriod.findUnique({ where: { year_month: { year, month } } });
+    if (!existing?.closedAt) throw new BadRequestException('الشهر مفتوح');
+    await this.prisma.$transaction([
+      this.prisma.fiscalPeriod.update({
+        where: { year_month: { year, month } },
+        data: { closedAt: null, closedById: null },
+      }),
+      this.prisma.fiscalPeriodLog.create({
+        data: { year, month, action: 'REOPEN', reason: text, userId },
+      }),
+    ]);
+    return this.listPeriods();
+  }
+
+  private assertMonth(year: number, month: number) {
+    if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12) {
+      throw new BadRequestException('الشهر غير صالح');
+    }
   }
 
   listBackups() {

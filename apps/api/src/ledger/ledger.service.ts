@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { AccountType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
+import { assertPeriodsOpen } from '../settings/period-lock';
 
 const DEFAULTS: { code: string; name: string; type: AccountType }[] = [
   { code: '1000', name: 'الخزنة', type: AccountType.ASSET },
@@ -52,6 +53,7 @@ export class LedgerService {
     lines: { accountId: string; debit?: number; credit?: number; note?: string }[];
   }) {
     if (!data.lines || data.lines.length < 2) throw new BadRequestException('القيد لازم يكون فيه طرفين على الأقل');
+    await assertPeriodsOpen(this.prisma, data.entryDate || new Date());
     const lines = data.lines.map((l) => ({
       accountId: l.accountId,
       debit: l.debit || 0,
