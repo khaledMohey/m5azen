@@ -9,4 +9,9 @@ export class DashboardController {
   summary() {
     return this.service.summary();
   }
+
+  @Get('insight')
+  insight() {
+    return this.service.insight();
+  }
 }

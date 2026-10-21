@@ -131,8 +131,8 @@ export class ProductsController {
   }
 
   @Get()
-  findAll(@Query('search') search?: string) {
-    return this.service.findAll(search);
+  findAll(@Query('search') search?: string, @Query('page') page?: string, @Query('pageSize') pageSize?: string, @Query('filter') filter?: string) {
+    return this.service.findAll({ search, page, pageSize, filter });
   }
 
   @Get(':id/image')

@@ -75,14 +75,6 @@ enum DocStatus {
   CANCELLED
 }
 
-enum AccountType {
-  ASSET
-  LIABILITY
-  EQUITY
-  REVENUE
-  EXPENSE
-}
-
 enum StockMovementType {
   PURCHASE
   SALE
@@ -99,6 +91,7 @@ model User {
   passwordHash String
   fullName     String
   role         Role     @default(SALES)
+  permissions  String?
   isActive     Boolean   @default(true)
   lastLoginAt  DateTime?
   createdAt    DateTime  @default(now())
@@ -565,6 +558,15 @@ model FiscalPeriodLog {
   @@index([year, month])
 }
 
+model IdempotencyKey {
+  id         String   @id @default(cuid())
+  key        String   @unique
+  scope      String
+  userId     String   @default("")
+  resourceId String   @default("")
+  createdAt  DateTime @default(now())
+}
+
 model Sequence {
   id    String @id @default(cuid())
   key   String @unique
@@ -724,36 +726,6 @@ model TradeDocumentLine {
 
   document TradeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
   product  Product       @relation(fields: [productId], references: [id])
-}
-
-model LedgerAccount {
-  id       String      @id @default(cuid())
-  code     String      @unique
-  name     String
-  type     AccountType
-  isActive Boolean     @default(true)
-  lines    JournalLine[]
-}
-
-model JournalEntry {
-  id          String   @id @default(cuid())
-  number      String   @unique
-  entryDate   DateTime @default(now())
-  description String
-  createdAt   DateTime @default(now())
-  lines       JournalLine[]
-}
-
-model JournalLine {
-  id        String @id @default(cuid())
-  entryId   String
-  accountId String
-  debit     Float  @default(0)
-  credit    Float  @default(0)
-  note      String?
-
-  entry   JournalEntry  @relation(fields: [entryId], references: [id], onDelete: Cascade)
-  account LedgerAccount @relation(fields: [accountId], references: [id])
 }
 
 model AuditLog {

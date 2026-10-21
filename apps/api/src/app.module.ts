@@ -19,7 +19,6 @@ import { SettingsModule } from './settings/settings.module';
 import { StockModule } from './stock/stock.module';
 import { FinanceModule } from './finance/finance.module';
 import { DocumentsModule } from './documents/documents.module';
-import { LedgerModule } from './ledger/ledger.module';
 import { OpsModule } from './ops/ops.module';
 import { OrgModule } from './org/org.module';
 import { WorkModule } from './work/work.module';
@@ -45,7 +44,6 @@ import { HealthController } from './health.controller';
     SettingsModule,
     FinanceModule,
     DocumentsModule,
-    LedgerModule,
     OpsModule,
     OrgModule,
     WorkModule,

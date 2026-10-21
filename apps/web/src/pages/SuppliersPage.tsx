@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ArrowDownCircle, ArrowUpCircle, FileText, Hash, MapPin, Pencil, Phone, Plus, Printer, Truck, Wallet } from 'lucide-react';
-import ExcelJS from 'exceljs';
+import { loadExcel } from '../lib/excel';
 import { api, formatDate, formatMoney, initialQuery } from '../lib/api';
 import { urgentInvoiceDate } from '../lib/due';
 import { DueAmount } from '../components/DueAmount';
-import { usePagedList } from '../lib/paging';
 import { useColumns } from '../lib/columns';
 import { useToast } from '../lib/feedback';
 import { FilterOption, IconAction, ListBar } from '../components/ListBar';
@@ -41,6 +40,10 @@ const SUPPLIER_VIEW = 'm5azen.suppliersView';
 export function SuppliersPage() {
   const toast = useToast();
   const [items, setItems] = useState<Supplier[]>([]);
+  const [listPage, setListPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [total, setTotal] = useState(0);
+  const [summary, setSummary] = useState({ debitCount: 0, creditCount: 0 });
   const [search, setSearch] = useState(initialQuery);
   const [listView, setListView] = useState<'all' | 'debit' | 'credit'>('all');
   const [view, setView] = useState<'table' | 'cards'>(() => (localStorage.getItem(SUPPLIER_VIEW) === 'cards' ? 'cards' : 'table'));
@@ -60,15 +63,19 @@ export function SuppliersPage() {
   ]);
 
   async function load() {
-    const suppliers = await api<Supplier[]>('/suppliers');
-    setItems(suppliers);
-    const purchases = await api<{ status: string; invoiceDate: string; total: number; paidAmount: number; supplier: { id: string } }[]>('/purchases').catch(() => []);
+    const params = new URLSearchParams({ page: String(listPage), pageSize: String(pageSize) });
+    if (search.trim()) params.set('search', search.trim());
+    if (listView !== 'all') params.set('balance', listView);
+    const suppliers = await api<{ items: Supplier[]; total: number; summary: typeof summary }>(`/suppliers?${params}`);
+    setItems(suppliers.items);
+    setTotal(suppliers.total);
+    setSummary(suppliers.summary);
+    const purchases = await api<{ invoiceDate: string; total: number; paidAmount: number; supplierId: string }[]>('/purchases/dues').catch(() => []);
     const grouped = new Map<string, { invoiceDate: string; remaining: number }[]>();
     for (const inv of purchases) {
-      if (inv.status === 'CANCELLED' || inv.status === 'DRAFT') continue;
-      const rows = grouped.get(inv.supplier.id) || [];
+      const rows = grouped.get(inv.supplierId) || [];
       rows.push({ invoiceDate: inv.invoiceDate, remaining: inv.total - inv.paidAmount });
-      grouped.set(inv.supplier.id, rows);
+      grouped.set(inv.supplierId, rows);
     }
     const dates: Record<string, string> = {};
     grouped.forEach((rows, id) => {
@@ -84,25 +91,23 @@ export function SuppliersPage() {
     return <span className="font-extrabold">{formatMoney(row.balance)}</span>;
   }
 
-  useEffect(() => { load().catch((error) => toast.error(error instanceof Error ? error.message : 'تعذر تحميل الموردين')); }, []);
+  useEffect(() => { setListPage(1); }, [search, listView, pageSize]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      load().catch((error) => toast.error(error instanceof Error ? error.message : 'تعذر تحميل الموردين'));
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [listPage, pageSize, search, listView]);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return items.filter((row) => {
-      if (listView === 'debit' && !(row.balance > 0)) return false;
-      if (listView === 'credit' && !(row.balance < 0)) return false;
-      if (!q) return true;
-      return [row.code, row.name, row.phone || '', row.address || ''].some((value) => value.toLowerCase().includes(q));
-    });
-  }, [items, search, listView]);
-
-  const pager = usePagedList(filtered, `${search}:${listView}`);
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const pageFrom = total === 0 ? 0 : (Math.min(listPage, pageCount) - 1) * pageSize + 1;
+  const pageTo = Math.min(Math.min(listPage, pageCount) * pageSize, total);
   const formErrors = {
     code: !form.code.trim() ? 'كود المورد مطلوب' : items.some((row) => row.id !== editingId && row.code.toLowerCase() === form.code.trim().toLowerCase()) ? 'الكود مستخدم لمورد آخر' : '',
     name: form.name.trim().length < 2 ? 'اسم المورد حرفين على الأقل' : '',
   };
-  const debitCount = items.filter((row) => row.balance > 0).length;
-  const creditCount = items.filter((row) => row.balance < 0).length;
+  const debitCount = summary.debitCount;
+  const creditCount = summary.creditCount;
 
   function openCreate() {
     setEditingId(null);
@@ -154,10 +159,15 @@ export function SuppliersPage() {
   }
 
   async function exportRows() {
+    const params = new URLSearchParams();
+    if (search.trim()) params.set('search', search.trim());
+    if (listView !== 'all') params.set('balance', listView);
+    const rows = await api<Supplier[]>(`/suppliers${params.toString() ? `?${params}` : ''}`);
+    const ExcelJS = await loadExcel();
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('الموردين');
     sheet.addRow(['الكود', 'الاسم', 'الهاتف', 'العنوان', 'الرصيد', 'الحالة']);
-    filtered.forEach((row) => sheet.addRow([row.code, row.name, row.phone || '', row.address || '', row.balance, row.isActive === false ? 'موقوف' : 'نشط']));
+    rows.forEach((row) => sheet.addRow([row.code, row.name, row.phone || '', row.address || '', row.balance, row.isActive === false ? 'موقوف' : 'نشط']));
     const buffer = await workbook.xlsx.writeBuffer();
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([buffer]));
@@ -201,10 +211,10 @@ export function SuppliersPage() {
             </div>
           )}
         />
-        {filtered.length === 0 ? <Empty text="لا يوجد موردين مطابقون" hint="غيّر البحث أو التصفية" /> : view === 'cards' ? (
+        {items.length === 0 ? <Empty text="لا يوجد موردين مطابقون" hint="غيّر البحث أو التصفية" /> : view === 'cards' ? (
           <>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {pager.slice.map((row) => (
+              {items.map((row) => (
                 <div key={row.id} className="lift rounded-2xl border border-slate-200 bg-white p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-3">
@@ -230,7 +240,7 @@ export function SuppliersPage() {
                 </div>
               ))}
             </div>
-            <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+            <Pager page={listPage} pages={pageCount} total={total} from={pageFrom} to={pageTo} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
           </>
         ) : (
           <>
@@ -246,7 +256,7 @@ export function SuppliersPage() {
                 </tr>
               </thead>
               <tbody>
-                {pager.slice.map((row) => (
+                {items.map((row) => (
                   <tr key={row.id} className={row.balance > 0 ? 'row-debit' : row.balance < 0 ? 'row-credit' : ''}>
                     {columns.visible('balance') && <Td>{supplierBalance(row)}</Td>}
                     {columns.visible('phone') && <Td><bdi dir="ltr" className="font-medium text-slate-600">{row.phone || '—'}</bdi></Td>}
@@ -271,7 +281,7 @@ export function SuppliersPage() {
                 ))}
               </tbody>
             </Table>
-            <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+            <Pager page={listPage} pages={pageCount} total={total} from={pageFrom} to={pageTo} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
           </>
         )}
       </Card>

@@ -1,6 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
+import { parseAccess } from '../common/access-map';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -28,6 +29,7 @@ export class AuthService {
         username: user.username,
         fullName: user.fullName,
         role: user.role,
+        access: parseAccess(user.permissions, user.role),
       },
     };
   }
@@ -35,9 +37,17 @@ export class AuthService {
   async me(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, username: true, fullName: true, role: true, isActive: true, lastLoginAt: true },
+      select: { id: true, username: true, fullName: true, role: true, permissions: true, isActive: true, lastLoginAt: true },
     });
-    if (!user) throw new UnauthorizedException();
-    return user;
+    if (!user || !user.isActive) throw new UnauthorizedException();
+    return {
+      id: user.id,
+      username: user.username,
+      fullName: user.fullName,
+      role: user.role,
+      isActive: user.isActive,
+      lastLoginAt: user.lastLoginAt,
+      access: parseAccess(user.permissions, user.role),
+    };
   }
 }

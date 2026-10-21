@@ -3,6 +3,7 @@ import { CashDirection, InvoiceStatus, PayMethodKind } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
 import { assertPeriodsOpen } from '../settings/period-lock';
+import { pageResult, readPage } from '../common/paging';
 
 @Injectable()
 export class CashService {
@@ -33,13 +34,31 @@ export class CashService {
     return this.prisma.cashAccount.update({ where: { id }, data });
   }
 
-  transactions(accountId?: string) {
-    return this.prisma.cashTransaction.findMany({
-      where: accountId ? { accountId } : undefined,
-      include: { account: true, createdBy: { select: { fullName: true } } },
-      orderBy: { createdAt: 'desc' },
-      take: 200,
-    });
+  async transactions(accountId?: string, pageQuery?: { page?: string; pageSize?: string; q?: string }) {
+    const page = readPage(pageQuery);
+    const where = {
+      ...(accountId ? { accountId } : {}),
+      ...(pageQuery?.q ? { description: { contains: pageQuery.q } } : {}),
+    };
+    if (!page) {
+      return this.prisma.cashTransaction.findMany({
+        where,
+        include: { account: true, createdBy: { select: { fullName: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+      });
+    }
+    const [total, items] = await Promise.all([
+      this.prisma.cashTransaction.count({ where }),
+      this.prisma.cashTransaction.findMany({
+        where,
+        include: { account: true, createdBy: { select: { fullName: true } } },
+        orderBy: { createdAt: 'desc' },
+        skip: page.skip,
+        take: page.take,
+      }),
+    ]);
+    return pageResult(items, total, page);
   }
 
   async createTransaction(data: {
@@ -418,17 +437,35 @@ export class CashService {
     });
   }
 
-  receipts() {
-    return this.prisma.receipt.findMany({
-      include: { customer: true, cashAccount: true, salesInvoice: true },
-      orderBy: { receivedAt: 'desc' },
-    });
+  async receipts(query?: { page?: string; pageSize?: string; q?: string }) {
+    const page = readPage(query);
+    const where = query?.q
+      ? { OR: [{ number: { contains: query.q } }, { customer: { name: { contains: query.q } } }] }
+      : undefined;
+    if (!page) {
+      return this.prisma.receipt.findMany({ where, include: { customer: true, cashAccount: true, salesInvoice: true }, orderBy: { receivedAt: 'desc' } });
+    }
+    const [total, items, sum] = await Promise.all([
+      this.prisma.receipt.count({ where }),
+      this.prisma.receipt.findMany({ where, include: { customer: true, cashAccount: true, salesInvoice: true }, orderBy: { receivedAt: 'desc' }, skip: page.skip, take: page.take }),
+      this.prisma.receipt.aggregate({ where, _sum: { amount: true } }),
+    ]);
+    return pageResult(items, total, page, { amount: sum._sum.amount || 0 });
   }
 
-  payments() {
-    return this.prisma.payment.findMany({
-      include: { supplier: true, cashAccount: true, purchaseInvoice: true },
-      orderBy: { paidAt: 'desc' },
-    });
+  async payments(query?: { page?: string; pageSize?: string; q?: string }) {
+    const page = readPage(query);
+    const where = query?.q
+      ? { OR: [{ number: { contains: query.q } }, { supplier: { name: { contains: query.q } } }] }
+      : undefined;
+    if (!page) {
+      return this.prisma.payment.findMany({ where, include: { supplier: true, cashAccount: true, purchaseInvoice: true }, orderBy: { paidAt: 'desc' } });
+    }
+    const [total, items, sum] = await Promise.all([
+      this.prisma.payment.count({ where }),
+      this.prisma.payment.findMany({ where, include: { supplier: true, cashAccount: true, purchaseInvoice: true }, orderBy: { paidAt: 'desc' }, skip: page.skip, take: page.take }),
+      this.prisma.payment.aggregate({ where, _sum: { amount: true } }),
+    ]);
+    return pageResult(items, total, page, { amount: sum._sum.amount || 0 });
   }
 }

@@ -28,8 +28,13 @@ export class SuppliersController {
   constructor(private service: SuppliersService) {}
 
   @Get()
-  findAll(@Query('search') search?: string) {
-    return this.service.findAll(search);
+  findAll(
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('balance') balance?: string,
+  ) {
+    return this.service.findAll({ search, page, pageSize, balance });
   }
 
   @Get(':id')

@@ -4,7 +4,7 @@ import { ArrowLeftRight, Boxes, Coins, Eye, PackageCheck, PackageX, Pencil, Prin
 import { api, formatDate, formatMoney } from '../lib/api';
 import { useConfirm, useToast } from '../lib/feedback';
 import {
-  Badge, Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, PrintHeader, SearchBox, Select, StatCard, StatGrid, Table, Td, Th,
+  Badge, Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, Pager, PrintHeader, SearchBox, Select, StatCard, StatGrid, Table, Td, Th,
 } from '../components/ui';
 
 type FieldValue = { value: string; field: { label: string } };
@@ -75,6 +75,9 @@ export function StockPage() {
     items: [], grandTotal: 0, totalQty: 0,
   });
   const [movements, setMovements] = useState<Movement[]>([]);
+  const [movPage, setMovPage] = useState(1);
+  const [movPageSize, setMovPageSize] = useState(20);
+  const [movTotal, setMovTotal] = useState(0);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [warehouseId, setWarehouseId] = useState(() => params.get('warehouse') || '');
@@ -113,25 +116,31 @@ export function StockPage() {
     const q = new URLSearchParams();
     if (warehouseId) q.set('warehouseId', warehouseId);
     const qs = q.toString() ? `?${q}` : '';
-    const [val, w, p, mov] = await Promise.all([
+    const mov = new URLSearchParams(q);
+    mov.set('page', String(movPage));
+    mov.set('pageSize', String(movPageSize));
+    if (search.trim()) mov.set('search', search.trim());
+    const [val, w, p, movPageResult] = await Promise.all([
       api<{ items: StockItem[]; grandTotal: number; totalQty: number }>(`/stock/valuation${qs}`),
       api<Warehouse[]>('/warehouses'),
       api<Product[]>('/products'),
-      api<Movement[]>(`/stock/movements${qs}`),
+      api<{ items: Movement[]; total: number }>(`/stock/movements?${mov}`),
     ]);
     setData(val);
     setWarehouses(w);
     setProducts(p);
-    setMovements(mov);
+    setMovements(movPageResult.items);
+    setMovTotal(movPageResult.total);
     if (detail) {
       const refreshed = val.items.find((i) => i.id === detail.id);
       setDetail(refreshed || null);
     }
   }
 
+  useEffect(() => { setMovPage(1); }, [search, warehouseId, movPageSize]);
   useEffect(() => {
     load();
-  }, [warehouseId]);
+  }, [warehouseId, search, movPage, movPageSize]);
 
   const visibleItems = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -151,16 +160,10 @@ export function StockPage() {
     });
   }, [data.items, search]);
 
-  const visibleMovements = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return movements;
-    return movements.filter((m) =>
-      [m.product.name, m.product.sku, m.warehouse.name, m.reference || '', m.note || '', MOV_LABELS[m.type] || m.type]
-        .join(' ')
-        .toLowerCase()
-        .includes(q),
-    );
-  }, [movements, search]);
+  const visibleMovements = movements;
+  const movPages = Math.max(1, Math.ceil(movTotal / movPageSize));
+  const movFrom = movTotal === 0 ? 0 : (Math.min(movPage, movPages) - 1) * movPageSize + 1;
+  const movTo = Math.min(Math.min(movPage, movPages) * movPageSize, movTotal);
 
   const visibleQty = visibleItems.reduce((s, i) => s + i.quantity, 0);
   const visibleCost = Math.round(visibleItems.reduce((s, i) => s + i.totalCost, 0) * 100) / 100;
@@ -405,6 +408,7 @@ export function StockPage() {
               </tbody>
             </Table>
           )}
+          <Pager page={movPage} pages={movPages} total={movTotal} from={movFrom} to={movTo} pageSize={movPageSize} onPageSize={setMovPageSize} onPage={setMovPage} />
         </Card>
       )}
 

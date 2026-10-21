@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { Role } from '@prisma/client';
+import { normalizeAccess } from '../common/access-map';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -9,7 +10,7 @@ export class UsersService {
 
   findAll() {
     return this.prisma.user.findMany({
-      select: { id: true, username: true, fullName: true, role: true, isActive: true, createdAt: true, lastLoginAt: true },
+      select: { id: true, username: true, fullName: true, role: true, isActive: true, permissions: true, createdAt: true, lastLoginAt: true },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -41,11 +42,22 @@ export class UsersService {
 
   async update(
     id: string,
-    data: { fullName?: string; role?: Role; isActive?: boolean; password?: string },
+    data: { fullName?: string; role?: Role; isActive?: boolean; password?: string; permissions?: Record<string, unknown> },
+    actorId?: string,
   ) {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('المستخدم غير موجود');
     const passwordHash = data.password ? await bcrypt.hash(data.password, 10) : undefined;
+    const role = data.role || user.role;
+    let permissions: string | null | undefined;
+    if (data.permissions) {
+      const access = normalizeAccess(data.permissions, role);
+      if (actorId && actorId === id) {
+        access.settings.view = true;
+        if (!access.settings.actions.includes('users')) access.settings.actions.push('users');
+      }
+      permissions = JSON.stringify(access);
+    }
     return this.prisma.user.update({
       where: { id },
       data: {
@@ -53,8 +65,9 @@ export class UsersService {
         role: data.role,
         isActive: data.isActive,
         ...(passwordHash ? { passwordHash } : {}),
+        ...(permissions !== undefined ? { permissions } : {}),
       },
-      select: { id: true, username: true, fullName: true, role: true, isActive: true },
+      select: { id: true, username: true, fullName: true, role: true, isActive: true, permissions: true },
     });
   }
 

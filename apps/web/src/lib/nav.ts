@@ -25,6 +25,7 @@ export type AppRole = 'ADMIN' | 'ACCOUNTANT' | 'WAREHOUSE' | 'SALES';
 export type NavItem = {
   to: string;
   label: string;
+  page: string;
   icon: LucideIcon;
   end?: boolean;
   keywords: string;
@@ -47,49 +48,49 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: 'نظرة عامة',
     items: [
-      { to: '/', label: 'لوحة التحكم', icon: LayoutDashboard, end: true, keywords: 'dashboard رئيسية' },
+      { to: '/', label: 'لوحة التحكم', page: 'dashboard', icon: LayoutDashboard, end: true, keywords: 'dashboard رئيسية' },
     ],
   },
   {
     label: 'المخزون',
     items: [
-      { to: '/warehouses', label: 'المخازن', icon: Warehouse, keywords: 'مخزن warehouse' },
-      { to: '/products', label: 'الأصناف', icon: Package, keywords: 'صنف منتج product استيراد import' },
-      { to: '/stock', label: 'المخزون', icon: Boxes, keywords: 'رصيد حركة stock' },
+      { to: '/warehouses', label: 'المخازن', page: 'warehouses', icon: Warehouse, keywords: 'مخزن warehouse' },
+      { to: '/products', label: 'الأصناف', page: 'products', icon: Package, keywords: 'صنف منتج product استيراد import' },
+      { to: '/stock', label: 'المخزون', page: 'stock', icon: Boxes, keywords: 'رصيد حركة stock' },
     ],
   },
   {
     label: 'الأطراف',
     items: [
-      { to: '/suppliers', label: 'الموردين', icon: Truck, keywords: 'مورد supplier' },
-      { to: '/customers', label: 'العملاء', icon: Users, keywords: 'عميل customer' },
+      { to: '/suppliers', label: 'الموردين', page: 'suppliers', icon: Truck, keywords: 'مورد supplier' },
+      { to: '/customers', label: 'العملاء', page: 'customers', icon: Users, keywords: 'عميل customer' },
     ],
   },
   {
     label: 'العمليات',
     items: [
-      { to: '/sales', label: 'المبيعات', icon: ShoppingCart, keywords: 'فاتورة بيع sales' },
-      { to: '/purchases', label: 'المشتريات', icon: ShoppingBag, keywords: 'فاتورة شراء purchase' },
-      { to: '/returns', label: 'المرتجعات', icon: Undo2, keywords: 'مرتجع return' },
-      { to: '/documents', label: 'عروض وأوامر', icon: ClipboardList, keywords: 'عرض سعر أمر' },
-      { to: '/cash', label: 'الخزنة', icon: Wallet, keywords: 'نقدي خزنة cash' },
+      { to: '/sales', label: 'المبيعات', page: 'sales', icon: ShoppingCart, keywords: 'فاتورة بيع sales' },
+      { to: '/purchases', label: 'المشتريات', page: 'purchases', icon: ShoppingBag, keywords: 'فاتورة شراء purchase' },
+      { to: '/returns', label: 'المرتجعات', page: 'returns', icon: Undo2, keywords: 'مرتجع return' },
+      { to: '/documents', label: 'عروض وأوامر', page: 'documents', icon: ClipboardList, keywords: 'عرض سعر أمر' },
+      { to: '/cash', label: 'الخزنة', page: 'cash', icon: Wallet, keywords: 'نقدي خزنة cash' },
     ],
   },
   {
     label: 'المالية',
     items: [
-      { to: '/finance', label: 'المالية', icon: Landmark, keywords: 'مصروف شيك وردية' },
-      { to: '/reports', label: 'التقارير', icon: BarChart3, keywords: 'تقرير report' },
-      { to: '/report-builder', label: 'منشئ التقارير', icon: FileBarChart, keywords: 'report builder حفظ تصدير' },
-      { to: '/analytics', label: 'التحليلات', icon: LineChart, keywords: 'تحليل analytics نمو' },
-      { to: '/insights', label: 'التنبيهات الذكية', icon: Sparkles, keywords: 'تنبيه صلاحية نقص' },
+      { to: '/finance', label: 'المالية', page: 'finance', icon: Landmark, keywords: 'مصروف شيك وردية' },
+      { to: '/reports', label: 'التقارير', page: 'reports', icon: BarChart3, keywords: 'تقرير report' },
+      { to: '/report-builder', label: 'منشئ التقارير', page: 'reportBuilder', icon: FileBarChart, keywords: 'report builder حفظ تصدير' },
+      { to: '/analytics', label: 'التحليلات', page: 'analytics', icon: LineChart, keywords: 'تحليل analytics نمو' },
+      { to: '/insights', label: 'التنبيهات الذكية', page: 'insights', icon: Sparkles, keywords: 'تنبيه صلاحية نقص' },
     ],
   },
   {
     label: 'النظام',
     items: [
-      { to: '/audit', label: 'سجل العمليات', icon: ScrollText, keywords: 'audit سجل', roles: ['ADMIN'] },
-      { to: '/settings', label: 'الإعدادات', icon: Settings, keywords: 'إعداد مستخدم نسخ' },
+      { to: '/audit', label: 'سجل العمليات', page: 'audit', icon: ScrollText, keywords: 'audit سجل', roles: ['ADMIN'] },
+      { to: '/settings', label: 'الإعدادات', page: 'settings', icon: Settings, keywords: 'إعداد مستخدم نسخ' },
     ],
   },
 ];
@@ -102,12 +103,12 @@ export function canAccess(role: string | undefined, roles?: AppRole[]) {
   return !!role && roles.includes(role as AppRole);
 }
 
-export const QUICK_ACTIONS: { to: string; label: string; roles?: AppRole[] }[] = [
-  { to: '/sales', label: 'فاتورة مبيعات', roles: ['ADMIN', 'SALES', 'ACCOUNTANT'] },
-  { to: '/purchases', label: 'فاتورة مشتريات', roles: ['ADMIN', 'ACCOUNTANT', 'WAREHOUSE'] },
-  { to: '/products', label: 'الأصناف' },
-  { to: '/stock', label: 'المخزون' },
-  { to: '/cash', label: 'حركة خزنة', roles: ['ADMIN', 'ACCOUNTANT'] },
-  { to: '/reports', label: 'التقارير' },
-  { to: '/report-builder', label: 'منشئ التقارير' },
+export const QUICK_ACTIONS: { to: string; label: string; page: string; roles?: AppRole[] }[] = [
+  { to: '/sales', label: 'فاتورة مبيعات', page: 'sales', roles: ['ADMIN', 'SALES', 'ACCOUNTANT'] },
+  { to: '/purchases', label: 'فاتورة مشتريات', page: 'purchases', roles: ['ADMIN', 'ACCOUNTANT', 'WAREHOUSE'] },
+  { to: '/products', label: 'الأصناف', page: 'products' },
+  { to: '/stock', label: 'المخزون', page: 'stock' },
+  { to: '/cash', label: 'حركة خزنة', page: 'cash', roles: ['ADMIN', 'ACCOUNTANT'] },
+  { to: '/reports', label: 'التقارير', page: 'reports' },
+  { to: '/report-builder', label: 'منشئ التقارير', page: 'reportBuilder' },
 ];

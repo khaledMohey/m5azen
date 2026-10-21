@@ -7,7 +7,6 @@ import {
 import { api, formatDate, formatMoney, formatRelative } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { QUICK_ACTIONS, canAccess } from '../lib/nav';
-import { dueTone } from '../lib/due';
 import { Card, DateRangeFilter, Empty, PageSkeleton, StatusBadge, todayIso } from '../components/ui';
 import { AreaChart, BarList, CountMoney, CountNumber, Donut, Sparkline } from '../components/charts';
 
@@ -32,38 +31,29 @@ type Dash = {
   payables?: { count: number; amount: number };
 };
 
-type SaleRow = {
-  id: string;
-  invoiceDate: string;
-  total: number;
-  paidAmount: number;
-  status: string;
-  customer?: { name: string } | null;
-  warehouse?: { name: string } | null;
-  lines: { quantity: number; total: number; unitCost: number; product?: { name: string; categoryId?: string | null } | null }[];
+type Insight = {
+  labels: string[];
+  salesSeries: number[];
+  purchaseSeries: number[];
+  countSeries: number[];
+  monthRevenue: number;
+  monthProfit: number;
+  monthCount: number;
+  revenue30: number;
+  purchases30: number;
+  topProducts: { label: string; value: number; hint: string }[];
+  topCustomers: { label: string; value: number; hint: string }[];
+  branches: { label: string; value: number }[];
+  slices: { label: string; value: number; color: string }[];
+  aging: { red: { count: number; amount: number }; yellow: { count: number; amount: number }; green: { count: number; amount: number } };
 };
-type PurchaseRow = { id: string; invoiceDate: string; total: number; status: string };
-
-const PALETTE = ['var(--color-brand-700)', '#0ea5e9', '#f59e0b', '#10b981', '#8b5cf6', '#f43f5e', '#64748b', '#14b8a6'];
-const counted = (status: string) => status !== 'DRAFT' && status !== 'CANCELLED';
 
 function growth(current = 0, previous = 0) {
   if (!previous) return current > 0 ? 100 : 0;
   return ((current - previous) / previous) * 100;
 }
 
-function dayKey(value: string | Date) {
-  const d = new Date(value);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function lastDays(count: number) {
-  return Array.from({ length: count }, (_, i) => {
-    const d = new Date();
-    d.setDate(d.getDate() - (count - 1 - i));
-    return dayKey(d);
-  });
-}
+const BRANCH_COLORS = ['#1e3a5f', '#0ea5e9', '#f59e0b', '#10b981', '#8b5cf6', '#f43f5e'];
 
 function greeting() {
   const hour = new Date().getHours();
@@ -79,104 +69,19 @@ export function DashboardPage() {
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
   const [overview, setOverview] = useState<{ sales: { total: number; count: number }; purchases: { total: number; count: number } } | null>(null);
-  const [sales, setSales] = useState<SaleRow[]>([]);
-  const [purchases, setPurchases] = useState<PurchaseRow[]>([]);
-  const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
+  const [insight, setInsight] = useState<Insight | null>(null);
   const role = user?.role || '';
   const finance = role === 'ADMIN' || role === 'ACCOUNTANT';
   const warehouse = role === 'ADMIN' || role === 'WAREHOUSE';
 
   useEffect(() => {
     api<Dash>('/dashboard').then(setData).catch((err) => setError(err instanceof Error ? err.message : 'تعذر تحميل اللوحة'));
-    api<SaleRow[]>('/sales').then(setSales).catch(() => setSales([]));
-    api<PurchaseRow[]>('/purchases').then(setPurchases).catch(() => setPurchases([]));
-    api<{ id: string; name: string }[]>('/products/categories').then(setCategories).catch(() => setCategories([]));
+    api<Insight>('/dashboard/insight').then(setInsight).catch(() => setInsight(null));
   }, []);
 
   useEffect(() => {
     api<NonNullable<typeof overview>>(`/ops/overview?from=${from}&to=${to}`).then(setOverview).catch(() => setOverview(null));
   }, [from, to]);
-
-  const insight = useMemo(() => {
-    const days30 = lastDays(30);
-    const salesByDay = new Map<string, number>();
-    const countByDay = new Map<string, number>();
-    const purchasesByDay = new Map<string, number>();
-    const productRevenue = new Map<string, { value: number; qty: number }>();
-    const customerRevenue = new Map<string, { value: number; count: number }>();
-    const categoryRevenue = new Map<string, number>();
-    const branchRevenue = new Map<string, number>();
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    monthStart.setHours(0, 0, 0, 0);
-    const since30 = new Date(days30[0]);
-    let monthRevenue = 0;
-    let monthCost = 0;
-    let monthCount = 0;
-    const aging = { red: { count: 0, amount: 0 }, yellow: { count: 0, amount: 0 }, green: { count: 0, amount: 0 } };
-
-    for (const sale of sales) {
-      if (!counted(sale.status)) continue;
-      const key = dayKey(sale.invoiceDate);
-      salesByDay.set(key, (salesByDay.get(key) || 0) + sale.total);
-      countByDay.set(key, (countByDay.get(key) || 0) + 1);
-      const date = new Date(sale.invoiceDate);
-      if (date >= monthStart) {
-        monthRevenue += sale.total;
-        monthCount += 1;
-        monthCost += sale.lines.reduce((s, l) => s + l.quantity * (l.unitCost || 0), 0);
-      }
-      const remaining = sale.total - sale.paidAmount;
-      const tone = dueTone(sale.invoiceDate, remaining);
-      if (tone !== 'clear') {
-        aging[tone].count += 1;
-        aging[tone].amount += remaining;
-      }
-      if (date < since30) continue;
-      const customer = sale.customer?.name || 'عميل';
-      const c = customerRevenue.get(customer) || { value: 0, count: 0 };
-      customerRevenue.set(customer, { value: c.value + sale.total, count: c.count + 1 });
-      const branch = sale.warehouse?.name || 'غير محدد';
-      branchRevenue.set(branch, (branchRevenue.get(branch) || 0) + sale.total);
-      for (const line of sale.lines) {
-        const name = line.product?.name || 'صنف';
-        const p = productRevenue.get(name) || { value: 0, qty: 0 };
-        productRevenue.set(name, { value: p.value + line.total, qty: p.qty + line.quantity });
-        const cat = categories.find((x) => x.id === line.product?.categoryId)?.name || 'بدون تصنيف';
-        categoryRevenue.set(cat, (categoryRevenue.get(cat) || 0) + line.total);
-      }
-    }
-    for (const purchase of purchases) {
-      if (!counted(purchase.status)) continue;
-      const key = dayKey(purchase.invoiceDate);
-      purchasesByDay.set(key, (purchasesByDay.get(key) || 0) + purchase.total);
-    }
-
-    const sorted = <T,>(map: Map<string, T>, val: (v: T) => number) => [...map.entries()].sort((a, b) => val(b[1]) - val(a[1]));
-    const cats = sorted(categoryRevenue, (v) => v);
-    const topCats = cats.slice(0, 6);
-    const otherCats = cats.slice(6).reduce((s, [, v]) => s + v, 0);
-
-    return {
-      labels: days30.map((d) => `${Number(d.slice(8))}/${Number(d.slice(5, 7))}`),
-      salesSeries: days30.map((d) => salesByDay.get(d) || 0),
-      purchaseSeries: days30.map((d) => purchasesByDay.get(d) || 0),
-      countSeries: days30.map((d) => countByDay.get(d) || 0),
-      monthRevenue,
-      monthProfit: monthRevenue - monthCost,
-      monthCount,
-      revenue30: days30.reduce((s, d) => s + (salesByDay.get(d) || 0), 0),
-      purchases30: days30.reduce((s, d) => s + (purchasesByDay.get(d) || 0), 0),
-      topProducts: sorted(productRevenue, (v) => v.value).slice(0, 5).map(([label, v]) => ({ label, value: v.value, hint: `${v.qty.toLocaleString('ar-EG')} قطعة مباعة` })),
-      topCustomers: sorted(customerRevenue, (v) => v.value).slice(0, 5).map(([label, v]) => ({ label, value: v.value, hint: `${v.count.toLocaleString('ar-EG')} فاتورة` })),
-      branches: sorted(branchRevenue, (v) => v).map(([label, value]) => ({ label, value })),
-      slices: [
-        ...topCats.map(([label, value], i) => ({ label, value, color: PALETTE[i % PALETTE.length] })),
-        ...(otherCats > 0 ? [{ label: 'أخرى', value: otherCats, color: '#cbd5e1' }] : []),
-      ],
-      aging,
-    };
-  }, [sales, purchases, categories]);
 
   const activity = useMemo(() => {
     if (!data) return [];
@@ -193,11 +98,11 @@ export function DashboardPage() {
   }, [data]);
 
   if (error) return <Card><Empty text="تعذر تحميل لوحة التحكم" hint={error} /></Card>;
-  if (!data) return <PageSkeleton />;
+  if (!data || !insight) return <PageSkeleton />;
 
   const salesGrowth = growth(data.salesMonth?.total, data.salesPrevMonth?.total);
   const purchaseGrowth = growth(data.purchasesMonth?.total, data.purchasesPrevMonth?.total);
-  const actions = QUICK_ACTIONS.filter((item) => canAccess(role, item.roles));
+  const actions = QUICK_ACTIONS.filter((item) => (user?.access ? !!user.access[item.page]?.view : canAccess(role, item.roles)));
   const sameDay = from === to;
   const isToday = sameDay && from === todayIso();
   const salesTotal = overview?.sales.total ?? data.salesToday.total;
@@ -411,7 +316,7 @@ export function DashboardPage() {
                   <div key={b.label} className="flex items-center gap-3 text-xs">
                     <span className="w-28 shrink-0 truncate font-semibold text-slate-700">{b.label}</span>
                     <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100">
-                      <div className="h-full rounded-full" style={{ width: `${(b.value / Math.max(1, insight.branches[0].value)) * 100}%`, background: PALETTE[i % PALETTE.length] }} />
+                      <div className="h-full rounded-full" style={{ width: `${(b.value / Math.max(1, insight.branches[0].value)) * 100}%`, background: BRANCH_COLORS[i % BRANCH_COLORS.length] }} />
                     </div>
                     <span className="w-24 shrink-0 text-left font-bold text-slate-800">{formatMoney(b.value)}</span>
                   </div>

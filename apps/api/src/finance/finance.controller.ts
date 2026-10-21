@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { IsEnum, IsNumber, IsOptional, IsString } from 'class-validator';
 import { CheckDirection, CheckStatus, Role } from '@prisma/client';
 import { Roles } from '../common/guards';
@@ -76,8 +76,8 @@ export class FinanceController {
   }
 
   @Get('expenses')
-  expenses() {
-    return this.service.listExpenses();
+  expenses(@Query('page') page?: string, @Query('pageSize') pageSize?: string) {
+    return this.service.listExpenses({ page, pageSize });
   }
 
   @Post('expenses')
@@ -87,8 +87,8 @@ export class FinanceController {
   }
 
   @Get('checks')
-  checks() {
-    return this.service.listChecks();
+  checks(@Query('page') page?: string, @Query('pageSize') pageSize?: string, @Query('status') status?: string, @Query('direction') direction?: string) {
+    return this.service.listChecks({ page, pageSize, status, direction });
   }
 
   @Post('checks')

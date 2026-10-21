@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { IsArray, IsBoolean, IsNumber, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { InvoiceStatus, Role } from '@prisma/client';
@@ -41,8 +41,24 @@ export class PurchasesController {
   constructor(private service: PurchasesService) {}
 
   @Get()
-  findAll(@Query('status') status?: InvoiceStatus) {
-    return this.service.findAll(status);
+  findAll(
+    @Query('status') status?: InvoiceStatus,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('q') q?: string,
+    @Query('due') due?: string,
+  ) {
+    return this.service.findAll({ status, page, pageSize, q, due });
+  }
+
+  @Get('dues')
+  dues() {
+    return this.service.dues();
+  }
+
+  @Get('price-hints')
+  priceHints(@Query('supplierId') supplierId?: string, @Query('excludeInvoiceId') excludeInvoiceId?: string) {
+    return this.service.priceHints(supplierId, excludeInvoiceId);
   }
 
   @Get(':id')
@@ -52,8 +68,12 @@ export class PurchasesController {
 
   @Post()
   @Roles(Role.ADMIN, Role.ACCOUNTANT, Role.WAREHOUSE)
-  create(@Body() dto: CreatePurchaseDto, @Req() req: { user: { userId: string } }) {
-    return this.service.create({ ...dto, createdById: req.user.userId });
+  create(
+    @Body() dto: CreatePurchaseDto,
+    @Req() req: { user: { userId: string } },
+    @Headers('x-idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.service.create({ ...dto, createdById: req.user.userId, idempotencyKey });
   }
 
   @Post(':id/confirm')

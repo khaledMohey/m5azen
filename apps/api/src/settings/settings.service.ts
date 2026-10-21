@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { periodLabel, periodParts } from './period-lock';
@@ -52,25 +53,71 @@ export class SettingsService {
   }
 
   async backup() {
-    if (process.env.TURSO_DATABASE_URL) {
-      return { ok: false, message: 'قاعدة البيانات على السحابة (Turso) — النسخ الاحتياطي اليدوي متاح من النسخة المحلية أو من لوحة Turso' };
+    const snapshot = await this.snapshot();
+    const dir = this.backupDir();
+    mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `m5azen-${stamp}.json`;
+    writeFileSync(join(dir, fileName), JSON.stringify(snapshot));
+    const dbPath = this.sqlitePath();
+    if (dbPath) copyFileSync(dbPath, join(dir, `m5azen-${stamp}.db`));
+    return { ok: true, fileName, snapshot };
+  }
+
+  readBackup(fileName: string) {
+    const safe = fileName.replace(/[^a-zA-Z0-9._-]/g, '');
+    const path = join(this.backupDir(), safe);
+    if (!existsSync(path)) throw new BadRequestException('النسخة غير موجودة');
+    if (safe.endsWith('.json')) return JSON.parse(readFileSync(path, 'utf8'));
+    return readFileSync(path);
+  }
+
+  async restore(snapshot: { version?: number; tables?: Record<string, unknown[]> }) {
+    if (snapshot?.version !== 1 || !snapshot.tables) throw new BadRequestException('ملف النسخة غير صالح');
+    const tables = reviveDates(snapshot.tables);
+    await this.prisma.$executeRawUnsafe('PRAGMA foreign_keys = OFF');
+    try {
+      for (const name of [...SNAPSHOT_MODELS].reverse()) {
+        const delegate = (this.prisma as unknown as Record<string, { deleteMany?: () => Promise<unknown> }>)[name];
+        if (delegate?.deleteMany) await delegate.deleteMany();
+      }
+      for (const name of SNAPSHOT_MODELS) {
+        const rows = tables[name];
+        const delegate = (this.prisma as unknown as Record<string, { createMany?: (args: { data: unknown[] }) => Promise<unknown> }>)[name];
+        if (!rows?.length || !delegate?.createMany) continue;
+        for (let i = 0; i < rows.length; i += 200) {
+          await delegate.createMany({ data: rows.slice(i, i + 200) });
+        }
+      }
+    } finally {
+      await this.prisma.$executeRawUnsafe('PRAGMA foreign_keys = ON');
     }
+    return { ok: true };
+  }
+
+  private async snapshot() {
+    const tables: Record<string, unknown[]> = {};
+    for (const name of SNAPSHOT_MODELS) {
+      const delegate = (this.prisma as unknown as Record<string, { findMany?: () => Promise<unknown[]> }>)[name];
+      if (!delegate?.findMany) continue;
+      tables[name] = await delegate.findMany();
+    }
+    return { version: 1, createdAt: new Date().toISOString(), tables };
+  }
+
+  private backupDir() {
+    if (process.env.TURSO_DATABASE_URL) return join(tmpdir(), 'm5azen-backups');
+    return join(process.cwd(), 'backups');
+  }
+
+  private sqlitePath() {
+    if (process.env.TURSO_DATABASE_URL) return '';
     const candidates = [
       join(process.cwd(), 'prisma', 'dev.db'),
       join(process.cwd(), 'apps', 'api', 'prisma', 'dev.db'),
       join(__dirname, '..', '..', 'prisma', 'dev.db'),
-      join(process.cwd(), 'prisma', 'prisma', 'dev.db'),
     ];
-    const dbPath = candidates.find((p) => existsSync(p));
-    if (!dbPath) {
-      return { ok: false, message: 'ملف قاعدة البيانات غير موجود' };
-    }
-    const backupDir = join(dirname(dbPath), '..', 'backups');
-    mkdirSync(backupDir, { recursive: true });
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const dest = join(backupDir, `m5azen-${stamp}.db`);
-    copyFileSync(dbPath, dest);
-    return { ok: true, path: dest, fileName: `m5azen-${stamp}.db` };
+    return candidates.find((path) => existsSync(path)) || '';
   }
 
   async listPeriods() {
@@ -170,16 +217,33 @@ export class SettingsService {
   }
 
   listBackups() {
-    const dirs = [
-      join(process.cwd(), 'backups'),
-      join(process.cwd(), 'apps', 'api', 'backups'),
-      join(__dirname, '..', '..', 'backups'),
-    ];
-    const backupDir = dirs.find((d) => existsSync(d));
-    if (!backupDir) return [];
-    return readdirSync(backupDir)
-      .filter((f) => f.endsWith('.db'))
+    const dir = this.backupDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir)
+      .filter((file) => file.endsWith('.json') || file.endsWith('.db'))
       .sort()
       .reverse();
   }
+}
+
+const SNAPSHOT_MODELS = [
+  'user', 'warehouse', 'productCustomField', 'category', 'product', 'productFieldValue', 'stockBalance', 'stockMovement',
+  'stockTransfer', 'stockTransferLine', 'supplier', 'customer', 'cashAccount', 'payMethod', 'cashTransaction',
+  'salesInvoice', 'salesInvoiceLine', 'purchaseInvoice', 'purchaseInvoiceLine', 'salesReturn', 'salesReturnLine',
+  'purchaseReturn', 'purchaseReturnLine', 'payment', 'receipt', 'setting', 'fiscalPeriod', 'fiscalPeriodLog', 'sequence',
+  'customerPrice', 'warehouseLocation', 'productLocation', 'userWarehouse', 'cashierShift', 'expenseCategory', 'expense',
+  'bankCheck', 'tradeDocument', 'tradeDocumentLine', 'auditLog', 'appNotification', 'orgNode', 'recordNote', 'workTask',
+  'taskComment', 'savedReport', 'savedView', 'attachment', 'fileBlob', 'automationRule', 'automationRun', 'idempotencyKey',
+] as const;
+
+function reviveDates(value: unknown): any {
+  if (value instanceof Date) return value;
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) return new Date(value);
+  if (Array.isArray(value)) return value.map(reviveDates);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) out[key] = reviveDates(item);
+    return out;
+  }
+  return value;
 }

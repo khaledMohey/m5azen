@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { PriceList } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { pageResult, readPage } from '../common/paging';
 
 export const WALK_IN_CODE = 'WALKIN';
 export const WALK_IN_NAME = 'عميل سريع';
@@ -32,13 +33,26 @@ export class CustomersService implements OnModuleInit {
     return this.prisma.customer.create({ data: { code, name: trimmed } });
   }
 
-  findAll(search?: string) {
-    return this.prisma.customer.findMany({
-      where: search
-        ? { OR: [{ name: { contains: search } }, { code: { contains: search } }] }
-        : undefined,
-      orderBy: { name: 'asc' },
-    });
+  async findAll(query?: { search?: string; page?: string; pageSize?: string; balance?: string }) {
+    const page = readPage(query);
+    const where = {
+      ...(query?.search ? { OR: [{ name: { contains: query.search } }, { code: { contains: query.search } }] } : {}),
+      ...(query?.balance === 'debit' ? { balance: { gt: 0 } } : {}),
+    };
+    if (!page) {
+      return this.prisma.customer.findMany({ where, orderBy: { name: 'asc' } });
+    }
+    const [total, items, all] = await Promise.all([
+      this.prisma.customer.count({ where }),
+      this.prisma.customer.findMany({ where, orderBy: { name: 'asc' }, skip: page.skip, take: page.take }),
+      this.prisma.customer.findMany({ select: { balance: true, isActive: true } }),
+    ]);
+    const summary = {
+      debitCount: all.filter((row) => row.balance > 0).length,
+      activeCount: all.filter((row) => row.isActive !== false).length,
+      totalDue: all.reduce((sum, row) => sum + Math.max(0, row.balance), 0),
+    };
+    return pageResult(items, total, page, { summary });
   }
 
   async findOne(id: string) {

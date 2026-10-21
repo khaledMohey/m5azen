@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Boxes, CheckCircle2, Hash, MapPin, PackageCheck, Pencil, Plus, Trash2, Warehouse } from 'lucide-react';
-import ExcelJS from 'exceljs';
+import { loadExcel } from '../lib/excel';
 import { api, initialQuery } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useColumns } from '../lib/columns';
@@ -159,6 +159,7 @@ export function WarehousesPage() {
   }
 
   async function exportRows() {
+    const ExcelJS = await loadExcel();
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('المخازن');
     sheet.addRow(['الكود', 'الاسم', 'الموقع', 'الوصف', 'الأصناف', 'الكمية', 'الحالة']);

@@ -39,7 +39,11 @@ export function AppLayout() {
   const navigate = useNavigate();
 
   const current = NAV_ITEMS.find((item) => (item.end ? location.pathname === item.to : location.pathname.startsWith(item.to)));
-  const actions = QUICK_ACTIONS.filter((item) => canAccess(user?.role, item.roles));
+  const allowed = (page?: string, roles?: Parameters<typeof canAccess>[1]) => {
+    if (user?.access && page) return !!user.access[page]?.view;
+    return canAccess(user?.role, roles);
+  };
+  const actions = QUICK_ACTIONS.filter((item) => allowed(item.page, item.roles));
   const unreadCount = unread;
 
   useEffect(() => {
@@ -123,7 +127,7 @@ export function AppLayout() {
         </div>
         <nav className="relative flex-1 space-y-4 overflow-y-auto px-3 py-4 [scrollbar-width:thin]">
           {NAV_GROUPS.map((group) => {
-            const items = group.items.filter((item) => canAccess(user?.role, item.roles));
+            const items = group.items.filter((item) => allowed(item.page, item.roles));
             if (!items.length) return null;
             return (
             <div key={group.label}>

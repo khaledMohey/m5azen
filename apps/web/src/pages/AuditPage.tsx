@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Activity, CheckCircle2, Search, Users, XCircle } from 'lucide-react';
 import { api, formatRelative } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -31,28 +31,45 @@ export function AuditPage() {
   const [filter, setFilter] = useState<'ALL' | 'success' | 'failed'>('ALL');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
+  const [total, setTotal] = useState(0);
+  const [summary, setSummary] = useState({ total: 0, success: 0, failed: 0, users: 0 });
 
-  async function load(next = query) {
+  async function load(next = query, nextPage = page) {
     setError('');
-    setRows(null);
     try {
-      const path = user?.role === 'ADMIN' ? `/ops/audit${next ? `?q=${encodeURIComponent(next)}` : ''}` : '/ops/activity';
-      setRows(await api<Log[]>(path));
+      if (user?.role !== 'ADMIN') {
+        setRows(await api<Log[]>('/ops/activity'));
+        setTotal(0);
+        return;
+      }
+      const params = new URLSearchParams({ page: String(nextPage), pageSize: String(pageSize) });
+      if (next.trim()) params.set('q', next.trim());
+      if (filter !== 'ALL') params.set('status', filter);
+      const res = await api<{ items: Log[]; total: number; summary: typeof summary }>(`/ops/audit?${params}`);
+      setRows(res.items);
+      setTotal(res.total);
+      setSummary(res.summary);
     } catch (err) {
       setRows([]);
       setError(err instanceof Error ? err.message : 'تعذر تحميل السجل');
     }
-    setPage(1);
   }
 
-  useEffect(() => { load(''); }, [user?.role]);
+  useEffect(() => { setPage(1); }, [query, filter, pageSize, user?.role]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { load(query, page).catch(() => undefined); }, 200);
+    return () => window.clearTimeout(timer);
+  }, [query, filter, page, pageSize, user?.role]);
 
-  const all = rows || [];
-  const visible = useMemo(() => all.filter((r) => filter === 'ALL' || (filter === 'success' ? r.status === 'success' : r.status !== 'success')), [all, filter]);
-  const pages = Math.max(1, Math.ceil(visible.length / pageSize));
-  const slice = visible.slice((page - 1) * pageSize, page * pageSize);
-  const failed = all.filter((r) => r.status !== 'success').length;
-  const usersCount = new Set(all.map((r) => r.userName).filter(Boolean)).size;
+  const source = rows || [];
+  const visible = user?.role === 'ADMIN' ? source : source.filter((row) => filter === 'ALL' || (filter === 'success' ? row.status === 'success' : row.status !== 'success'));
+  const pages = Math.max(1, Math.ceil((user?.role === 'ADMIN' ? total : visible.length) / pageSize));
+  const slice = user?.role === 'ADMIN' ? visible : visible.slice((Math.min(page, pages) - 1) * pageSize, Math.min(page, pages) * pageSize);
+  const shownTotal = user?.role === 'ADMIN' ? total : visible.length;
+  const failed = user?.role === 'ADMIN' ? summary.failed : source.filter((row) => row.status !== 'success').length;
+  const usersCount = user?.role === 'ADMIN' ? summary.users : new Set(source.map((row) => row.userName).filter(Boolean)).size;
+  const successCount = user?.role === 'ADMIN' ? summary.success : source.length - failed;
+  const allCount = user?.role === 'ADMIN' ? summary.total : source.length;
 
   return (
     <div>
@@ -62,8 +79,8 @@ export function AuditPage() {
       />
 
       <StatGrid>
-        <StatCard label="إجمالي العمليات" value={all.length} icon={Activity} tone="brand" onClick={() => { setFilter('ALL'); setPage(1); }} active={filter === 'ALL'} />
-        <StatCard label="ناجحة" value={all.length - failed} icon={CheckCircle2} tone="emerald" onClick={() => { setFilter('success'); setPage(1); }} active={filter === 'success'} />
+        <StatCard label="إجمالي العمليات" value={allCount} icon={Activity} tone="brand" onClick={() => { setFilter('ALL'); setPage(1); }} active={filter === 'ALL'} />
+        <StatCard label="ناجحة" value={successCount} icon={CheckCircle2} tone="emerald" onClick={() => { setFilter('success'); setPage(1); }} active={filter === 'success'} />
         <StatCard label="فشلت" value={failed} icon={XCircle} tone="rose" onClick={() => { setFilter('failed'); setPage(1); }} active={filter === 'failed'} />
         <StatCard label="مستخدمون نشطون" value={usersCount} icon={Users} tone="violet" />
       </StatGrid>
@@ -71,16 +88,16 @@ export function AuditPage() {
       <Card>
         <CardHeader
           title="العمليات المسجلة"
-          subtitle={`${visible.length} عملية`}
+          subtitle={`${shownTotal} عملية`}
           icon={Activity}
           actions={user?.role === 'ADMIN' ? (
-            <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); load(); }}>
+            <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); setPage(1); load(query, 1); }}>
               <div className="relative">
                 <Search size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <Input className="w-64 pr-9" placeholder="بحث بالاسم أو العملية" value={query} onChange={(e) => setQuery(e.target.value)} />
               </div>
               <Button type="submit" variant="secondary">بحث</Button>
-              {query && <Button type="button" variant="ghost" onClick={() => { setQuery(''); load(''); }}>مسح</Button>}
+              {query && <Button type="button" variant="ghost" onClick={() => { setQuery(''); setPage(1); }}>مسح</Button>}
             </form>
           ) : undefined}
         />
@@ -114,7 +131,7 @@ export function AuditPage() {
                 })}
               </tbody>
             </Table>
-            <Pager page={page} pages={pages} total={visible.length} from={(page - 1) * pageSize + 1} to={Math.min(page * pageSize, visible.length)} pageSize={pageSize} onPage={setPage} onPageSize={(n) => { setPageSize(n); setPage(1); }} />
+            <Pager page={page} pages={pages} total={shownTotal} from={shownTotal === 0 ? 0 : (page - 1) * pageSize + 1} to={Math.min(page * pageSize, shownTotal)} pageSize={pageSize} onPage={setPage} onPageSize={(n) => { setPageSize(n); setPage(1); }} />
           </>
         )}
       </Card>

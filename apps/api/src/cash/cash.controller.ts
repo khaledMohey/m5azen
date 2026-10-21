@@ -80,8 +80,13 @@ export class CashController {
   }
 
   @Get('transactions')
-  transactions(@Query('accountId') accountId?: string) {
-    return this.service.transactions(accountId);
+  transactions(
+    @Query('accountId') accountId?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('q') q?: string,
+  ) {
+    return this.service.transactions(accountId, { page, pageSize, q });
   }
 
   @Post('transactions')
@@ -101,8 +106,8 @@ export class CashController {
   }
 
   @Get('receipts')
-  receipts() {
-    return this.service.receipts();
+  receipts(@Query('page') page?: string, @Query('pageSize') pageSize?: string, @Query('q') q?: string) {
+    return this.service.receipts({ page, pageSize, q });
   }
 
   @Post('receipts')
@@ -112,8 +117,8 @@ export class CashController {
   }
 
   @Get('payments')
-  payments() {
-    return this.service.payments();
+  payments(@Query('page') page?: string, @Query('pageSize') pageSize?: string, @Query('q') q?: string) {
+    return this.service.payments({ page, pageSize, q });
   }
 
   @Post('payments')

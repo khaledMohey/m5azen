@@ -3,6 +3,7 @@ import { FieldType } from '@prisma/client';
 import { existsSync, unlinkSync } from 'fs';
 import { join, resolve } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
+import { pageResult, readPage } from '../common/paging';
 import { rowsFromProductFile } from './product-file';
 
 @Injectable()
@@ -53,25 +54,63 @@ export class ProductsService {
     return this.prisma.productCustomField.delete({ where: { id } });
   }
 
-  findAll(search?: string) {
-    return this.prisma.product.findMany({
-      where: search
-        ? {
-            OR: [
-              { name: { contains: search } },
-              { sku: { contains: search } },
-              { barcode: { contains: search } },
-              { brand: { contains: search } },
-            ],
-          }
-        : undefined,
-      include: {
-        category: true,
-        fieldValues: { include: { field: true } },
-        stockBalances: { include: { warehouse: true } },
-      },
+  async findAll(query?: { search?: string; page?: string; pageSize?: string; filter?: string }) {
+    const page = readPage(query);
+    const where = query?.search
+      ? {
+          OR: [
+            { name: { contains: query.search } },
+            { sku: { contains: query.search } },
+            { barcode: { contains: query.search } },
+            { brand: { contains: query.search } },
+          ],
+        }
+      : undefined;
+    const include = {
+      category: true,
+      fieldValues: { include: { field: true } },
+      stockBalances: { include: { warehouse: true } },
+    };
+    if (!page && (!query?.filter || query.filter === 'all')) return this.prisma.product.findMany({ where, include, orderBy: { name: 'asc' } });
+    const light = await this.prisma.product.findMany({
+      where,
+      select: { id: true, minStock: true, barcode: true, brand: true, unit: true, costPrice: true, salePrice: true, stockBalances: { select: { quantity: true } } },
       orderBy: { name: 'asc' },
     });
+    const summary = { total: light.length, low: 0, noBarcode: 0, loss: 0, stockValue: 0, units: 0, brands: [] as string[], unitNames: [] as string[] };
+    const brandSet = new Set<string>();
+    const unitSet = new Set<string>();
+    const matched: typeof light = [];
+    for (const row of light) {
+      const qty = row.stockBalances.reduce((sum, item) => sum + item.quantity, 0);
+      const low = row.minStock > 0 && qty <= row.minStock;
+      const noBarcode = !row.barcode;
+      const loss = row.costPrice > 0 && row.salePrice < row.costPrice;
+      if (low) summary.low += 1;
+      if (noBarcode) summary.noBarcode += 1;
+      if (loss) summary.loss += 1;
+      summary.stockValue += row.costPrice * qty;
+      summary.units += qty;
+      if (row.brand) brandSet.add(row.brand);
+      if (row.unit) unitSet.add(row.unit);
+      const keep = query?.filter === 'low' ? low : query?.filter === 'barcode' ? noBarcode : query?.filter === 'loss' ? loss : true;
+      if (keep) matched.push(row);
+    }
+    summary.brands = [...brandSet];
+    summary.unitNames = [...unitSet];
+    if (!page) {
+      const allItems = matched.length
+        ? await this.prisma.product.findMany({ where: { id: { in: matched.map((row) => row.id) } }, include, orderBy: { name: 'asc' } })
+        : [];
+      return allItems;
+    }
+    const slice = matched.slice(page.skip, page.skip + page.take);
+    const items = slice.length
+      ? await this.prisma.product.findMany({ where: { id: { in: slice.map((row) => row.id) } }, include })
+      : [];
+    const order = new Map(slice.map((row, index) => [row.id, index]));
+    items.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+    return pageResult(items, matched.length, page, { summary });
   }
 
   async findOne(id: string) {

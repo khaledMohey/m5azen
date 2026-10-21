@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { pageResult, readPage } from '../common/paging';
 
 type Range = { start: Date; end: Date; prevStart: Date; prevEnd: Date };
 
@@ -215,13 +216,28 @@ export class OpsService {
     return this.notifications();
   }
 
-  async audit(query?: string) {
-    return this.prisma.auditLog.findMany({
-      where: query
-        ? { OR: [{ action: { contains: query } }, { userName: { contains: query } }, { path: { contains: query } }] }
-        : undefined,
-      orderBy: { createdAt: 'desc' },
-      take: 200,
+  async audit(query?: string, pageQuery?: { page?: string; pageSize?: string; status?: string }) {
+    const page = readPage(pageQuery);
+    const text = query
+      ? { OR: [{ action: { contains: query } }, { userName: { contains: query } }, { path: { contains: query } }] }
+      : {};
+    const where = {
+      ...text,
+      ...(pageQuery?.status === 'success' ? { status: 'success' } : {}),
+      ...(pageQuery?.status === 'failed' ? { NOT: { status: 'success' } } : {}),
+    };
+    if (!page) {
+      return this.prisma.auditLog.findMany({ where, orderBy: { createdAt: 'desc' }, take: 200 });
+    }
+    const [total, items, allTotal, success, users] = await Promise.all([
+      this.prisma.auditLog.count({ where }),
+      this.prisma.auditLog.findMany({ where, orderBy: { createdAt: 'desc' }, skip: page.skip, take: page.take }),
+      this.prisma.auditLog.count({ where: text }),
+      this.prisma.auditLog.count({ where: { ...text, status: 'success' } }),
+      this.prisma.auditLog.groupBy({ by: ['userName'], where: text }),
+    ]);
+    return pageResult(items, total, page, {
+      summary: { total: allTotal, success, failed: allTotal - success, users: users.filter((row) => row.userName).length },
     });
   }
 

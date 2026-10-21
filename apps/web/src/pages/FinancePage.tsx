@@ -1,33 +1,22 @@
-import { useEffect, useMemo, useState } from 'react';
-import { BookOpen, CalendarClock, FileCheck2, Plus, Receipt, Scale, Tags, Wallet } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { CalendarClock, FileCheck2, Plus, Receipt, Scale, Tags } from 'lucide-react';
 import { api, formatDate, formatMoney } from '../lib/api';
 import { useConfirm, useToast } from '../lib/feedback';
 import { BarList } from '../components/charts';
 import {
-  Badge, Button, Card, CardHeader, Empty, ErrorState, Input, Label, NumberInput, PageHeader, PageSkeleton, Select, StatCard, StatGrid, Table, Td, Th,
+  Badge, Button, Card, CardHeader, Empty, ErrorState, Input, Label, NumberInput, PageHeader, PageSkeleton, Pager, Select, StatCard, StatGrid, Table, Td, Th,
   type Tone,
 } from '../components/ui';
 
-type Tab = 'expenses' | 'checks' | 'ledger';
+type Tab = 'expenses' | 'checks';
 
 type Expense = { id: string; amount: number; expenseDate: string; notes?: string | null; category: { name: string }; account: { name: string } };
 type Check = { id: string; direction: string; checkNumber: string; bankName: string; amount: number; dueDate: string; status: string; customer?: { name: string } | null; supplier?: { name: string } | null };
-type LedgerAccount = { id: string; code: string; name: string; type: string };
-type Entry = { id: string; number: string; description: string; entryDate: string; lines: { debit: number; credit: number; account: { name: string } }[] };
-
 const CHECK_STATUS: Record<string, { label: string; tone: Tone }> = {
   PENDING: { label: 'قيد الانتظار', tone: 'amber' },
   CLEARED: { label: 'تم التحصيل / الصرف', tone: 'emerald' },
   BOUNCED: { label: 'مرتد', tone: 'rose' },
   CANCELLED: { label: 'ملغي', tone: 'slate' },
-};
-
-const ACCOUNT_TYPE: Record<string, { label: string; tone: Tone }> = {
-  ASSET: { label: 'أصول', tone: 'sky' },
-  LIABILITY: { label: 'خصوم', tone: 'rose' },
-  EQUITY: { label: 'حقوق ملكية', tone: 'violet' },
-  REVENUE: { label: 'إيرادات', tone: 'emerald' },
-  EXPENSE: { label: 'مصروفات', tone: 'amber' },
 };
 
 const num = (v: number | '') => (v === '' ? 0 : v);
@@ -44,31 +33,38 @@ export function FinancePage() {
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [checks, setChecks] = useState<Check[]>([]);
-  const [ledgerAccounts, setLedgerAccounts] = useState<LedgerAccount[]>([]);
-  const [entries, setEntries] = useState<Entry[]>([]);
   const [catName, setCatName] = useState('');
   const [expense, setExpense] = useState({ categoryId: '', methodId: '', amount: '' as number | '', notes: '' });
   const [checkForm, setCheckForm] = useState({ direction: 'IN', checkNumber: '', bankName: '', amount: '' as number | '', dueDate: '' });
-  const [journal, setJournal] = useState({ description: '', accountId: '', debit: '' as number | '', credit: '' as number | '', accountId2: '', debit2: '' as number | '', credit2: '' as number | '' });
   const [checkFilter, setCheckFilter] = useState<'ALL' | 'PENDING' | 'IN' | 'OUT'>('ALL');
+  const [listPage, setListPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [expenseTotalCount, setExpenseTotalCount] = useState(0);
+  const [checkTotal, setCheckTotal] = useState(0);
+  const [expenseSummary, setExpenseSummary] = useState<{ totalAmount: number; monthAmount: number; byCategory: { label: string; value: number }[] }>({ totalAmount: 0, monthAmount: 0, byCategory: [] });
+  const [checkSummary, setCheckSummary] = useState({ total: 0, pendingIn: 0, pendingInCount: 0, pendingOut: 0, pendingOutCount: 0 });
 
   async function load() {
     setLoadError('');
     try {
-      const [a, cats, ex, ch, la, en] = await Promise.all([
+      const params = new URLSearchParams({ page: String(listPage), pageSize: String(pageSize) });
+      const checkParams = new URLSearchParams(params);
+      if (checkFilter === 'PENDING') checkParams.set('status', 'PENDING');
+      if (checkFilter === 'IN' || checkFilter === 'OUT') checkParams.set('direction', checkFilter);
+      const [a, cats, ex, ch] = await Promise.all([
         api<{ id: string; name: string; kind: 'IMMEDIATE' | 'CHECK' }[]>('/cash/methods'),
         api<{ id: string; name: string }[]>('/finance/expense-categories'),
-        api<Expense[]>('/finance/expenses'),
-        api<Check[]>('/finance/checks'),
-        api<LedgerAccount[]>('/ledger/accounts'),
-        api<Entry[]>('/ledger/entries'),
+        api<{ items: Expense[]; total: number; summary: typeof expenseSummary }>(`/finance/expenses?${params}`),
+        api<{ items: Check[]; total: number; summary: typeof checkSummary }>(`/finance/checks?${checkParams}`),
       ]);
       setMethods(a);
       setCategories(cats);
-      setExpenses(ex);
-      setChecks(ch);
-      setLedgerAccounts(la);
-      setEntries(en);
+      setExpenses(ex.items);
+      setChecks(ch.items);
+      setExpenseTotalCount(ex.total);
+      setCheckTotal(ch.total);
+      setExpenseSummary(ex.summary);
+      setCheckSummary(ch.summary);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : 'تعذر تحميل البيانات المالية');
     } finally {
@@ -76,7 +72,8 @@ export function FinancePage() {
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { setListPage(1); }, [tab, checkFilter, pageSize]);
+  useEffect(() => { load(); }, [listPage, pageSize, tab, checkFilter]);
 
   async function run(action: () => Promise<unknown>, success: string) {
     setBusy(true);
@@ -93,40 +90,29 @@ export function FinancePage() {
     }
   }
 
-  const monthStart = useMemo(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1).getTime(); }, []);
-  const expenseTotal = expenses.reduce((s, e) => s + e.amount, 0);
-  const expenseMonth = expenses.filter((e) => new Date(e.expenseDate).getTime() >= monthStart).reduce((s, e) => s + e.amount, 0);
-  const pendingChecks = checks.filter((c) => c.status === 'PENDING');
-  const pendingIn = pendingChecks.filter((c) => c.direction === 'IN').reduce((s, c) => s + c.amount, 0);
-  const pendingOut = pendingChecks.filter((c) => c.direction !== 'IN').reduce((s, c) => s + c.amount, 0);
-  const byCategory = useMemo(() => {
-    const map = new Map<string, number>();
-    expenses.forEach((e) => map.set(e.category.name, (map.get(e.category.name) || 0) + e.amount));
-    return [...map.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).slice(0, 8);
-  }, [expenses]);
-  const visibleChecks = checks.filter((c) => checkFilter === 'ALL' || (checkFilter === 'PENDING' ? c.status === 'PENDING' : c.direction === checkFilter));
-  const journalDebit = num(journal.debit) + num(journal.debit2);
-  const journalCredit = num(journal.credit) + num(journal.credit2);
-  const journalBalanced = journalDebit > 0 && Math.abs(journalDebit - journalCredit) < 0.005;
+  const expenseTotal = expenseSummary.totalAmount;
+  const expenseMonth = expenseSummary.monthAmount;
+  const pendingIn = checkSummary.pendingIn;
+  const pendingOut = checkSummary.pendingOut;
+  const byCategory = expenseSummary.byCategory;
+  const visibleChecks = checks;
 
   const tabs: { id: Tab; label: string; count: number }[] = [
-    { id: 'expenses', label: 'المصروفات', count: expenses.length },
-    { id: 'checks', label: 'الشيكات', count: checks.length },
-    { id: 'ledger', label: 'القيود', count: entries.length },
+    { id: 'expenses', label: 'المصروفات', count: expenseTotalCount },
+    { id: 'checks', label: 'الشيكات', count: checkSummary.total },
   ];
 
-  if (!loaded) return <div><PageHeader title="المالية" subtitle="مصروفات مصنفة، دفتر شيكات، وقيود يومية" /><PageSkeleton /></div>;
+  if (!loaded) return <div><PageHeader title="المالية" subtitle="مصروفات مصنفة ودفتر شيكات" /><PageSkeleton /></div>;
 
   return (
     <div>
-      <PageHeader title="المالية" subtitle="مصروفات مصنفة، دفتر شيكات، وقيود يومية" />
+      <PageHeader title="المالية" subtitle="مصروفات مصنفة ودفتر شيكات" />
       {loadError && <Card className="mb-4"><ErrorState text={loadError} onRetry={load} /></Card>}
 
       <StatGrid>
         <StatCard label="مصروفات الشهر" value={formatMoney(expenseMonth)} hint={`الإجمالي المسجل ${formatMoney(expenseTotal)}`} icon={Receipt} tone="amber" onClick={() => setTab('expenses')} active={tab === 'expenses'} />
-        <StatCard label="شيكات واردة معلقة" value={formatMoney(pendingIn)} hint={`${pendingChecks.filter((c) => c.direction === 'IN').length} شيك`} icon={FileCheck2} tone="emerald" onClick={() => { setTab('checks'); setCheckFilter('IN'); }} />
-        <StatCard label="شيكات صادرة معلقة" value={formatMoney(pendingOut)} hint={`${pendingChecks.filter((c) => c.direction !== 'IN').length} شيك`} icon={CalendarClock} tone="rose" onClick={() => { setTab('checks'); setCheckFilter('OUT'); }} />
-        <StatCard label="قيود اليومية" value={entries.length} hint={`${ledgerAccounts.length} حساب في الدليل`} icon={BookOpen} tone="violet" onClick={() => setTab('ledger')} active={tab === 'ledger'} />
+        <StatCard label="شيكات واردة معلقة" value={formatMoney(pendingIn)} hint={`${checkSummary.pendingInCount} شيك`} icon={FileCheck2} tone="emerald" onClick={() => { setTab('checks'); setCheckFilter('IN'); }} />
+        <StatCard label="شيكات صادرة معلقة" value={formatMoney(pendingOut)} hint={`${checkSummary.pendingOutCount} شيك`} icon={CalendarClock} tone="rose" onClick={() => { setTab('checks'); setCheckFilter('OUT'); }} />
       </StatGrid>
 
       <div className="mb-4 flex w-fit max-w-full flex-wrap rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
@@ -201,7 +187,7 @@ export function FinancePage() {
               </Card>
             )}
             <Card>
-              <CardHeader title="سجل المصروفات" subtitle={`${expenses.length} مصروف`} icon={Receipt} />
+              <CardHeader title="سجل المصروفات" subtitle={`${expenseTotalCount} مصروف`} icon={Receipt} />
               {expenses.length === 0 ? <Empty text="لا توجد مصروفات مسجلة" hint="سجّل أول مصروف من النموذج" /> : (
                 <Table>
                   <thead><tr><Th>التاريخ</Th><Th>البند</Th><Th>الخزنة</Th><Th>ملاحظة</Th><Th>المبلغ</Th></tr></thead>
@@ -218,6 +204,7 @@ export function FinancePage() {
                   </tbody>
                 </Table>
               )}
+              <Pager page={listPage} pages={Math.max(1, Math.ceil(expenseTotalCount / pageSize))} total={expenseTotalCount} from={expenseTotalCount === 0 ? 0 : (listPage - 1) * pageSize + 1} to={Math.min(listPage * pageSize, expenseTotalCount)} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
             </Card>
           </div>
         </div>
@@ -255,7 +242,7 @@ export function FinancePage() {
           <Card>
             <CardHeader
               title="دفتر الشيكات"
-              subtitle={`${visibleChecks.length} شيك`}
+              subtitle={`${checkTotal} شيك`}
               icon={FileCheck2}
               actions={
                 <div className="flex rounded-xl bg-slate-100 p-1">
@@ -265,7 +252,7 @@ export function FinancePage() {
                 </div>
               }
             />
-            {visibleChecks.length === 0 ? <Empty text="لا توجد شيكات" /> : (
+            {checkTotal === 0 ? <Empty text="لا توجد شيكات" /> : (
               <Table>
                 <thead><tr><Th>الشيك</Th><Th>الطرف</Th><Th>البنك</Th><Th>الاستحقاق</Th><Th>المبلغ</Th><Th>الحالة</Th><Th></Th></tr></thead>
                 <tbody>
@@ -311,108 +298,8 @@ export function FinancePage() {
                 </tbody>
               </Table>
             )}
+            <Pager page={listPage} pages={Math.max(1, Math.ceil(checkTotal / pageSize))} total={checkTotal} from={checkTotal === 0 ? 0 : (listPage - 1) * pageSize + 1} to={Math.min(listPage * pageSize, checkTotal)} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
           </Card>
-        </div>
-      )}
-
-      {tab === 'ledger' && (
-        <div className="grid gap-4 xl:grid-cols-[1fr_1.2fr]">
-          <Card>
-            <CardHeader
-              title="دليل الحسابات"
-              subtitle={`${ledgerAccounts.length} حساب`}
-              icon={BookOpen}
-              actions={
-                <Button size="sm" variant="secondary" disabled={busy} onClick={() => run(() => api('/ledger/accounts/seed', { method: 'POST' }), 'تم تحديث الدليل الافتراضي')}>دليل افتراضي</Button>
-              }
-            />
-            {ledgerAccounts.length === 0 ? <Empty text="لا يوجد دليل حسابات" hint="أنشئ الدليل الافتراضي للبدء" /> : (
-              <Table>
-                <thead><tr><Th>الكود</Th><Th>الاسم</Th><Th>النوع</Th></tr></thead>
-                <tbody>
-                  {ledgerAccounts.map((a) => {
-                    const t = ACCOUNT_TYPE[a.type] || { label: a.type, tone: 'slate' as Tone };
-                    return (
-                      <tr key={a.id}>
-                        <Td><span className="font-mono text-xs font-bold text-brand-700" dir="ltr">{a.code}</span></Td>
-                        <Td className="font-semibold text-slate-800">{a.name}</Td>
-                        <Td><Badge tone={t.tone}>{t.label}</Badge></Td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </Table>
-            )}
-          </Card>
-          <div className="space-y-4">
-            <Card>
-              <CardHeader title="قيد يومية جديد" subtitle="يجب أن يتساوى المدين مع الدائن" icon={Plus} />
-              <form
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  if (!journal.description.trim()) return toast.error('اكتب بيان القيد');
-                  if (!journal.accountId || !journal.accountId2) return toast.error('اختر الحسابين');
-                  if (!journalBalanced) return toast.error('القيد غير متوازن: المدين لا يساوي الدائن');
-                  const ok = await run(() => api('/ledger/entries', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                      description: journal.description,
-                      lines: [
-                        { accountId: journal.accountId, debit: num(journal.debit), credit: num(journal.credit) },
-                        { accountId: journal.accountId2, debit: num(journal.debit2), credit: num(journal.credit2) },
-                      ],
-                    }),
-                  }), 'تم حفظ القيد');
-                  if (ok) setJournal({ description: '', accountId: '', debit: '', credit: '', accountId2: '', debit2: '', credit2: '' });
-                }}
-              >
-                <div className="mb-3"><Label>البيان</Label><Input value={journal.description} onChange={(e) => setJournal({ ...journal, description: e.target.value })} /></div>
-                <div className="overflow-hidden rounded-xl border border-slate-200">
-                  <div className="grid grid-cols-[1fr_110px_110px] gap-2 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-500">
-                    <span>الحساب</span><span>مدين</span><span>دائن</span>
-                  </div>
-                  {([['accountId', 'debit', 'credit', 'الحساب الأول'], ['accountId2', 'debit2', 'credit2', 'الحساب الثاني']] as const).map(([acc, dr, cr, ph]) => (
-                    <div key={acc} className="grid grid-cols-[1fr_110px_110px] gap-2 border-t border-slate-100 px-3 py-2">
-                      <Select value={journal[acc]} onChange={(e) => setJournal({ ...journal, [acc]: e.target.value })}>
-                        <option value="">{ph}</option>
-                        {ledgerAccounts.map((a) => <option key={a.id} value={a.id}>{a.code} {a.name}</option>)}
-                      </Select>
-                      <NumberInput value={journal[dr]} onValueChange={(v) => setJournal({ ...journal, [dr]: v })} />
-                      <NumberInput value={journal[cr]} onValueChange={(v) => setJournal({ ...journal, [cr]: v })} />
-                    </div>
-                  ))}
-                  <div className={`grid grid-cols-[1fr_110px_110px] gap-2 border-t px-3 py-2 text-sm font-extrabold tabular-nums ${journalBalanced ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-100 bg-slate-50 text-slate-600'}`}>
-                    <span>{journalBalanced ? 'القيد متوازن' : 'الإجمالي'}</span><span>{formatMoney(journalDebit)}</span><span>{formatMoney(journalCredit)}</span>
-                  </div>
-                </div>
-                <Button type="submit" className="mt-3" disabled={busy || ledgerAccounts.length === 0}>حفظ القيد</Button>
-              </form>
-            </Card>
-            <Card>
-              <CardHeader title="آخر القيود" subtitle={`${entries.length} قيد`} icon={Wallet} />
-              {entries.length === 0 ? <Empty text="لا توجد قيود بعد" /> : (
-                <div className="space-y-3">
-                  {entries.map((entry) => (
-                    <div key={entry.id} className="rounded-xl border border-slate-200 p-3 text-sm">
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <div className="font-bold text-slate-800"><span className="font-mono text-xs text-brand-700" dir="ltr">{entry.number}</span> · {entry.description}</div>
-                        <div className="whitespace-nowrap text-xs text-muted">{formatDate(entry.entryDate)}</div>
-                      </div>
-                      {entry.lines.map((line, i) => (
-                        <div key={i} className="flex items-center justify-between border-t border-slate-100 py-1.5 text-[13px]">
-                          <span className="text-slate-700">{line.account.name}</span>
-                          <span className="flex gap-4 tabular-nums">
-                            <span className={line.debit ? 'font-bold text-emerald-700' : 'text-slate-400'}>مدين {formatMoney(line.debit)}</span>
-                            <span className={line.credit ? 'font-bold text-rose-600' : 'text-slate-400'}>دائن {formatMoney(line.credit)}</span>
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Card>
-          </div>
         </div>
       )}
     </div>

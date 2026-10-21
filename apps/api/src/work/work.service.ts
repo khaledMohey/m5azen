@@ -1,6 +1,8 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InvoiceStatus, TaskPriority, TaskStatus } from '@prisma/client';
-import * as ExcelJS from 'exceljs';
+async function loadExcel() {
+  return import('exceljs');
+}
 import { createReadStream, existsSync, unlinkSync } from 'fs';
 import { extname, join, resolve } from 'path';
 import { Readable } from 'stream';
@@ -338,6 +340,7 @@ export class WorkService {
       }).join(','));
       return { mime: 'text/csv; charset=utf-8', filename: 'report.csv', body: Buffer.from(`\uFEFF${[header, ...lines].join('\n')}`, 'utf8') };
     }
+    const ExcelJS = await loadExcel();
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('تقرير');
     sheet.columns = report.columns.map((column) => ({ header: column.label, key: column.key, width: 18 }));

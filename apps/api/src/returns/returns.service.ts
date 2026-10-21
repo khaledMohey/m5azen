@@ -3,6 +3,7 @@ import { StockMovementType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
 import { assertPeriodsOpen } from '../settings/period-lock';
+import { pageResult, readPage } from '../common/paging';
 
 function sliceCost(
   lines: { productId: string; quantity: number; unitCost: number }[],
@@ -73,27 +74,39 @@ export class ReturnsService implements OnModuleInit {
     }
   }
 
-  listSalesReturns() {
-    return this.prisma.salesReturn.findMany({
-      include: {
-        customer: true,
-        warehouse: true,
-        salesInvoice: true,
-        lines: { include: { product: true } },
-      },
-      orderBy: { createdAt: 'desc' },
+  async listSalesReturns(query?: { page?: string; pageSize?: string; q?: string }) {
+    const page = readPage(query);
+    const where = query?.q
+      ? { OR: [{ number: { contains: query.q } }, { customer: { name: { contains: query.q } } }, { warehouse: { name: { contains: query.q } } }, { salesInvoice: { number: { contains: query.q } } }] }
+      : undefined;
+    const include = { customer: true, warehouse: true, salesInvoice: true, lines: { include: { product: true } } };
+    if (!page) return this.prisma.salesReturn.findMany({ where, include, orderBy: { createdAt: 'desc' } });
+    const monthKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit' }).format(new Date()).slice(0, 7);
+    const [total, items, all] = await Promise.all([
+      this.prisma.salesReturn.count({ where }),
+      this.prisma.salesReturn.findMany({ where, include, orderBy: { createdAt: 'desc' }, skip: page.skip, take: page.take }),
+      this.prisma.salesReturn.findMany({ select: { total: true, returnDate: true } }),
+    ]);
+    const month = all.filter((row) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit' }).format(row.returnDate).slice(0, 7) === monthKey);
+    return pageResult(items, total, page, {
+      summary: { count: all.length, amount: all.reduce((sum, row) => sum + row.total, 0), monthCount: month.length, monthAmount: month.reduce((sum, row) => sum + row.total, 0) },
     });
   }
 
-  listPurchaseReturns() {
-    return this.prisma.purchaseReturn.findMany({
-      include: {
-        supplier: true,
-        warehouse: true,
-        purchaseInvoice: true,
-        lines: { include: { product: true } },
-      },
-      orderBy: { createdAt: 'desc' },
+  async listPurchaseReturns(query?: { page?: string; pageSize?: string; q?: string }) {
+    const page = readPage(query);
+    const where = query?.q
+      ? { OR: [{ number: { contains: query.q } }, { supplier: { name: { contains: query.q } } }, { warehouse: { name: { contains: query.q } } }, { purchaseInvoice: { number: { contains: query.q } } }] }
+      : undefined;
+    const include = { supplier: true, warehouse: true, purchaseInvoice: true, lines: { include: { product: true } } };
+    if (!page) return this.prisma.purchaseReturn.findMany({ where, include, orderBy: { createdAt: 'desc' } });
+    const [total, items, all] = await Promise.all([
+      this.prisma.purchaseReturn.count({ where }),
+      this.prisma.purchaseReturn.findMany({ where, include, orderBy: { createdAt: 'desc' }, skip: page.skip, take: page.take }),
+      this.prisma.purchaseReturn.findMany({ select: { total: true } }),
+    ]);
+    return pageResult(items, total, page, {
+      summary: { count: all.length, amount: all.reduce((sum, row) => sum + row.total, 0) },
     });
   }
 

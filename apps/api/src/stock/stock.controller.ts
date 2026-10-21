@@ -56,8 +56,10 @@ export class StockController {
     @Query('warehouseId') warehouseId?: string,
     @Query('productId') productId?: string,
     @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
   ) {
-    return this.service.movements({ warehouseId, productId, search });
+    return this.service.movements({ warehouseId, productId, search, page, pageSize });
   }
 
   @Patch('movements/:id')

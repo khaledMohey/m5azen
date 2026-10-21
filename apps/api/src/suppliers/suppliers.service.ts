@@ -1,16 +1,29 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { pageResult, readPage } from '../common/paging';
 
 @Injectable()
 export class SuppliersService {
   constructor(private prisma: PrismaService) {}
 
-  findAll(search?: string) {
-    return this.prisma.supplier.findMany({
-      where: search
-        ? { OR: [{ name: { contains: search } }, { code: { contains: search } }] }
-        : undefined,
-      orderBy: { name: 'asc' },
+  async findAll(query?: { search?: string; page?: string; pageSize?: string; balance?: string }) {
+    const page = readPage(query);
+    const where = {
+      ...(query?.search ? { OR: [{ name: { contains: query.search } }, { code: { contains: query.search } }] } : {}),
+      ...(query?.balance === 'debit' ? { balance: { gt: 0 } } : {}),
+      ...(query?.balance === 'credit' ? { balance: { lt: 0 } } : {}),
+    };
+    if (!page) return this.prisma.supplier.findMany({ where, orderBy: { name: 'asc' } });
+    const [total, items, all] = await Promise.all([
+      this.prisma.supplier.count({ where }),
+      this.prisma.supplier.findMany({ where, orderBy: { name: 'asc' }, skip: page.skip, take: page.take }),
+      this.prisma.supplier.findMany({ select: { balance: true } }),
+    ]);
+    return pageResult(items, total, page, {
+      summary: {
+        debitCount: all.filter((row) => row.balance > 0).length,
+        creditCount: all.filter((row) => row.balance < 0).length,
+      },
     });
   }
 

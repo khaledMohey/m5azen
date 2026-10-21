@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { CheckDirection, CheckStatus, PayMethodKind, ShiftStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { assertPeriodsOpen } from '../settings/period-lock';
+import { pageResult, readPage } from '../common/paging';
 
 @Injectable()
 export class FinanceService {
@@ -71,10 +72,32 @@ export class FinanceService {
     return this.prisma.expenseCategory.create({ data: { name: name.trim() } });
   }
 
-  listExpenses() {
-    return this.prisma.expense.findMany({
-      include: { category: true, account: true },
-      orderBy: { expenseDate: 'desc' },
+  async listExpenses(query?: { page?: string; pageSize?: string }) {
+    const page = readPage(query);
+    if (!page) {
+      return this.prisma.expense.findMany({ include: { category: true, account: true }, orderBy: { expenseDate: 'desc' } });
+    }
+    const monthKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit' }).format(new Date()).slice(0, 7);
+    const [total, items, all] = await Promise.all([
+      this.prisma.expense.count(),
+      this.prisma.expense.findMany({ include: { category: true, account: true }, orderBy: { expenseDate: 'desc' }, skip: page.skip, take: page.take }),
+      this.prisma.expense.findMany({ select: { amount: true, expenseDate: true, category: { select: { name: true } } } }),
+    ]);
+    const byCategory = new Map<string, number>();
+    let totalAmount = 0;
+    let monthAmount = 0;
+    for (const row of all) {
+      totalAmount += row.amount;
+      const key = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit' }).format(row.expenseDate).slice(0, 7);
+      if (key === monthKey) monthAmount += row.amount;
+      byCategory.set(row.category.name, (byCategory.get(row.category.name) || 0) + row.amount);
+    }
+    return pageResult(items, total, page, {
+      summary: {
+        totalAmount,
+        monthAmount,
+        byCategory: [...byCategory.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).slice(0, 8),
+      },
     });
   }
 
@@ -132,10 +155,29 @@ export class FinanceService {
     });
   }
 
-  listChecks() {
-    return this.prisma.bankCheck.findMany({
-      include: { customer: true, supplier: true, account: true },
-      orderBy: { dueDate: 'asc' },
+  async listChecks(query?: { page?: string; pageSize?: string; status?: string; direction?: string }) {
+    const page = readPage(query);
+    const where = {
+      ...(query?.status ? { status: query.status as never } : {}),
+      ...(query?.direction ? { direction: query.direction as never } : {}),
+    };
+    if (!page) {
+      return this.prisma.bankCheck.findMany({ where, include: { customer: true, supplier: true, account: true }, orderBy: { dueDate: 'asc' } });
+    }
+    const [total, items, all] = await Promise.all([
+      this.prisma.bankCheck.count({ where }),
+      this.prisma.bankCheck.findMany({ where, include: { customer: true, supplier: true, account: true }, orderBy: { dueDate: 'asc' }, skip: page.skip, take: page.take }),
+      this.prisma.bankCheck.findMany({ select: { status: true, direction: true, amount: true } }),
+    ]);
+    const pending = all.filter((row) => row.status === 'PENDING');
+    return pageResult(items, total, page, {
+      summary: {
+        total: all.length,
+        pendingIn: pending.filter((row) => row.direction === 'IN').reduce((sum, row) => sum + row.amount, 0),
+        pendingInCount: pending.filter((row) => row.direction === 'IN').length,
+        pendingOut: pending.filter((row) => row.direction !== 'IN').reduce((sum, row) => sum + row.amount, 0),
+        pendingOutCount: pending.filter((row) => row.direction !== 'IN').length,
+      },
     });
   }
 

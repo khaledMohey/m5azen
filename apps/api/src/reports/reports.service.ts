@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InvoiceStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import * as ExcelJS from 'exceljs';
+async function loadExcel() {
+  return import('exceljs');
+}
 
 function sliceInvoiceCost(lines: { productId: string; quantity: number; unitCost: number }[], productId: string) {
   const rows = lines.filter((line) => line.productId === productId && line.quantity > 0);
@@ -14,17 +16,18 @@ function sliceInvoiceCost(lines: { productId: string; quantity: number; unitCost
 export class ReportsService {
   constructor(private prisma: PrismaService) {}
 
-  async inventory(warehouseId?: string) {
+  async inventory(warehouseIds?: string[]) {
     return this.prisma.stockBalance.findMany({
-      where: warehouseId ? { warehouseId } : undefined,
+      where: warehouseIds?.length ? { warehouseId: { in: warehouseIds } } : undefined,
       include: { product: true, warehouse: true },
       orderBy: { product: { name: 'asc' } },
     });
   }
 
-  async salesSummary(from?: string, to?: string) {
+  async salesSummary(from?: string, to?: string, warehouseIds?: string[]) {
     const where = {
       status: { not: 'CANCELLED' as const },
+      ...(warehouseIds?.length ? { warehouseId: { in: warehouseIds } } : {}),
       ...(from || to
         ? {
             invoiceDate: {
@@ -44,9 +47,10 @@ export class ReportsService {
     return { invoices, total, paid, count: invoices.length };
   }
 
-  async purchasesSummary(from?: string, to?: string) {
+  async purchasesSummary(from?: string, to?: string, warehouseIds?: string[]) {
     const where = {
       status: { not: 'CANCELLED' as const },
+      ...(warehouseIds?.length ? { warehouseId: { in: warehouseIds } } : {}),
       ...(from || to
         ? {
             invoiceDate: {
@@ -66,9 +70,9 @@ export class ReportsService {
     return { invoices, total, paid, count: invoices.length };
   }
 
-  async profit(from?: string, to?: string) {
-    const sales = await this.salesSummary(from, to);
-    const purchases = await this.purchasesSummary(from, to);
+  async profit(from?: string, to?: string, warehouseIds?: string[]) {
+    const sales = await this.salesSummary(from, to, warehouseIds);
+    const purchases = await this.purchasesSummary(from, to, warehouseIds);
     const invoiceDate = this.dayRange(from, to);
     const expenseDate = this.dayRange(from, to);
     const posted = { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL, InvoiceStatus.PAID] as InvoiceStatus[] };
@@ -77,6 +81,7 @@ export class ReportsService {
       this.prisma.salesInvoice.findMany({
         where: {
           status: posted,
+          ...(warehouseIds?.length ? { warehouseId: { in: warehouseIds } } : {}),
           ...(invoiceDate ? { invoiceDate } : {}),
         },
         include: {
@@ -86,7 +91,10 @@ export class ReportsService {
         orderBy: { invoiceDate: 'asc' },
       }),
       this.prisma.salesReturn.findMany({
-        where: invoiceDate ? { returnDate: invoiceDate } : undefined,
+        where: {
+          ...(warehouseIds?.length ? { warehouseId: { in: warehouseIds } } : {}),
+          ...(invoiceDate ? { returnDate: invoiceDate } : {}),
+        },
         include: {
           customer: true,
           salesInvoice: { include: { lines: true } },
@@ -94,11 +102,13 @@ export class ReportsService {
         },
         orderBy: { returnDate: 'asc' },
       }),
-      this.prisma.expense.findMany({
-        where: expenseDate ? { expenseDate } : undefined,
-        include: { category: true, account: true },
-        orderBy: { expenseDate: 'asc' },
-      }),
+      warehouseIds?.length
+        ? Promise.resolve([])
+        : this.prisma.expense.findMany({
+            where: expenseDate ? { expenseDate } : undefined,
+            include: { category: true, account: true },
+            orderBy: { expenseDate: 'asc' },
+          }),
     ]);
 
     type ProfitLine = {
@@ -266,30 +276,31 @@ export class ReportsService {
     };
   }
 
-  async productInsights(from?: string, to?: string) {
+  async productInsights(from?: string, to?: string, warehouseIds?: string[]) {
     const invoiceDate = this.dayRange(from, to);
     const confirmed = { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL, InvoiceStatus.PAID] };
+    const warehouse = warehouseIds?.length ? { warehouseId: { in: warehouseIds } } : {};
 
     const [saleLines, saleReturnLines, purchaseLines, purchaseReturnLines, products] = await Promise.all([
       this.prisma.salesInvoiceLine.findMany({
-        where: { invoice: { status: confirmed, ...(invoiceDate ? { invoiceDate } : {}) } },
+        where: { invoice: { status: confirmed, ...warehouse, ...(invoiceDate ? { invoiceDate } : {}) } },
         include: { product: true },
       }),
       this.prisma.salesReturnLine.findMany({
-        where: invoiceDate ? { salesReturn: { returnDate: invoiceDate } } : undefined,
+        where: { salesReturn: { ...warehouse, ...(invoiceDate ? { returnDate: invoiceDate } : {}) } },
         include: { product: true },
       }),
       this.prisma.purchaseInvoiceLine.findMany({
-        where: { invoice: { status: confirmed, ...(invoiceDate ? { invoiceDate } : {}) } },
+        where: { invoice: { status: confirmed, ...warehouse, ...(invoiceDate ? { invoiceDate } : {}) } },
         include: { product: true },
       }),
       this.prisma.purchaseReturnLine.findMany({
-        where: invoiceDate ? { purchaseReturn: { returnDate: invoiceDate } } : undefined,
+        where: { purchaseReturn: { ...warehouse, ...(invoiceDate ? { returnDate: invoiceDate } : {}) } },
         include: { product: true },
       }),
       this.prisma.product.findMany({
         where: { isActive: true },
-        include: { stockBalances: true },
+        include: { stockBalances: warehouseIds?.length ? { where: { warehouseId: { in: warehouseIds } } } : true },
       }),
     ]);
 
@@ -404,16 +415,34 @@ export class ReportsService {
     };
   }
 
-  async cashReport(from?: string, to?: string) {
-    const where =
-      from || to
-        ? {
-            createdAt: {
-              ...(from ? { gte: new Date(from) } : {}),
-              ...(to ? { lte: new Date(to) } : {}),
-            },
-          }
-        : undefined;
+  async cashReport(from?: string, to?: string, warehouseIds?: string[]) {
+    const createdAt = from || to
+      ? {
+          ...(from ? { gte: new Date(from) } : {}),
+          ...(to ? { lte: new Date(to) } : {}),
+        }
+      : undefined;
+    let references: string[] | undefined;
+    if (warehouseIds?.length) {
+      const [receipts, payments] = await Promise.all([
+        this.prisma.receipt.findMany({
+          where: { salesInvoice: { warehouseId: { in: warehouseIds } } },
+          select: { number: true },
+        }),
+        this.prisma.payment.findMany({
+          where: { purchaseInvoice: { warehouseId: { in: warehouseIds } } },
+          select: { number: true },
+        }),
+      ]);
+      references = [...receipts, ...payments].map((row) => row.number);
+      if (!references.length) {
+        return { transactions: [], accounts: [], totalIn: 0, totalOut: 0, net: 0 };
+      }
+    }
+    const where = {
+      ...(createdAt ? { createdAt } : {}),
+      ...(references ? { reference: { in: references } } : {}),
+    };
     const transactions = await this.prisma.cashTransaction.findMany({
       where,
       include: { account: true },
@@ -425,8 +454,9 @@ export class ReportsService {
     return { transactions, accounts, totalIn, totalOut, net: totalIn - totalOut };
   }
 
-  async exportInventoryExcel(warehouseId?: string) {
-    const rows = await this.inventory(warehouseId);
+  async exportInventoryExcel(warehouseIds?: string[]) {
+    const rows = await this.inventory(warehouseIds);
+    const ExcelJS = await loadExcel();
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('المخزون');
     ws.columns = [

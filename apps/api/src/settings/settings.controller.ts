@@ -1,4 +1,5 @@
-import { BadRequestException, Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Post, Req, Res, UseGuards } from '@nestjs/common';
+import type { Response } from 'express';
 import { IsNumber, IsObject, IsString, MinLength } from 'class-validator';
 import { Role } from '@prisma/client';
 import { SettingsService } from './settings.service';
@@ -101,5 +102,25 @@ export class SettingsController {
   @UseGuards(SettingsGateGuard)
   listBackups() {
     return this.service.listBackups();
+  }
+
+  @Get('backups/:name')
+  @Roles(Role.ADMIN)
+  @UseGuards(SettingsGateGuard)
+  readBackup(@Param('name') name: string, @Res() res: Response) {
+    const data = this.service.readBackup(name);
+    res.setHeader('Content-Disposition', `attachment; filename="${name.replace(/[^a-zA-Z0-9._-]/g, '')}"`);
+    if (Buffer.isBuffer(data)) {
+      res.setHeader('Content-Type', 'application/octet-stream');
+      return res.send(data);
+    }
+    return res.json(data);
+  }
+
+  @Post('restore')
+  @Roles(Role.ADMIN)
+  @UseGuards(SettingsGateGuard)
+  restore(@Body() body: { version?: number; tables?: Record<string, unknown[]> }) {
+    return this.service.restore(body);
   }
 }

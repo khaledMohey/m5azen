@@ -1,5 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
-import * as ExcelJS from 'exceljs';
+async function loadExcel() {
+  return import('exceljs');
+}
 import mammoth from 'mammoth';
 
 function ensurePdfGlobals() {
@@ -138,9 +140,10 @@ function tablesFromHtml(html: string) {
 }
 
 async function rowsFromExcel(buffer: Buffer) {
+  const ExcelJS = await loadExcel();
   const workbook = new ExcelJS.Workbook();
   try {
-    await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+    await workbook.xlsx.load(buffer as never);
   } catch {
     throw new BadRequestException('تعذر قراءة ملف الإكسل');
   }

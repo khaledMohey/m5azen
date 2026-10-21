@@ -1,13 +1,12 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Printer, Eye, ShoppingCart, Receipt, Trash2, Pencil } from 'lucide-react';
-import ExcelJS from 'exceljs';
+import { loadExcel } from '../lib/excel';
 import { api, formatDate, formatMoney, initialQuery, productImageUrl } from '../lib/api';
-import { dueTone } from '../lib/due';
 import { DueAmount } from '../components/DueAmount';
-import { AddLineButton, EditorErrors, EditorSection, InvoiceEditor, LineCard, SummaryRow } from '../components/InvoiceEditor';
+import { AddLineButton, EditorErrors, EditorSection, InvoiceEditor, LineCard, PriceHint, SummaryRow } from '../components/InvoiceEditor';
+import { ProductPicker } from '../components/ProductPicker';
 import { TenderEditor, type PayMethodOption, type TenderPart } from '../components/TenderEditor';
 import { useConfirm, usePrompt, useToast } from '../lib/feedback';
-import { usePagedList } from '../lib/paging';
 import { useColumns } from '../lib/columns';
 import { IconAction, ListBar } from '../components/ListBar';
 import {
@@ -97,6 +96,11 @@ export function SalesPage() {
   const promptText = usePrompt();
   const toast = useToast();
   const [items, setItems] = useState<Invoice[]>([]);
+  const [listPage, setListPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [total, setTotal] = useState(0);
+  const [summary, setSummary] = useState({ count: 0, total: 0, paid: 0, due: 0, red: 0, yellow: 0, green: 0 });
+  const requestKey = useRef('');
   const [customers, setCustomers] = useState<Party[]>([]);
   const [warehouses, setWarehouses] = useState<Party[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -133,17 +137,16 @@ export function SalesPage() {
   const [shift, setShift] = useState<{ id: string; openingCash: number; account: { name: string } } | null>(null);
   const [useShift, setUseShift] = useState(false);
   const [customerPrices, setCustomerPrices] = useState<Record<string, number>>({});
+  const [priceHints, setPriceHints] = useState<Record<string, { lastPurchase: number | null; lastCustomer: number | null }>>({});
 
-  async function load() {
-    const [inv, c, w, p, a, m] = await Promise.all([
-      api<Invoice[]>('/sales'),
+  async function loadLookups() {
+    const [c, w, p, a, m] = await Promise.all([
       api<Party[]>('/customers'),
       api<Party[]>('/warehouses'),
       api<Product[]>('/products'),
       api<Account[]>('/cash/accounts'),
       api<PayMethodOption[]>('/cash/methods'),
     ]);
-    setItems(inv);
     setCustomers(c);
     setWarehouses(w);
     setProducts(p);
@@ -152,6 +155,17 @@ export function SalesPage() {
     api<{ id: string; openingCash: number; account: { name: string } } | null>('/finance/shifts/current')
       .then((row) => setShift(row))
       .catch(() => setShift(null));
+  }
+
+  async function load() {
+    const params = new URLSearchParams({ page: String(listPage), pageSize: String(pageSize) });
+    if (search.trim()) params.set('q', search.trim());
+    if (status === 'due') params.set('due', '1');
+    else if (status !== 'all') params.set('status', status);
+    const inv = await api<{ items: Invoice[]; total: number; summary: typeof summary }>(`/sales?${params}`);
+    setItems(inv.items);
+    setTotal(inv.total);
+    setSummary(inv.summary);
   }
 
   const selectedCustomer = customers.find((c) => c.name.trim() === form.customerName.trim());
@@ -170,6 +184,22 @@ export function SalesPage() {
       .catch(() => setCustomerPrices({}));
   }, [selectedCustomer?.id]);
 
+  const hintCustomerName = posOpen ? posForm.customerName : form.customerName;
+  const hintCustomer = customers.find((customer) => customer.name.trim() === hintCustomerName.trim());
+
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (hintCustomer) params.set('customerId', hintCustomer.id);
+    if (!posOpen && editingId) params.set('excludeInvoiceId', editingId);
+    api<{ productId: string; lastPurchase: number | null; lastCustomer: number | null }[]>(`/sales/price-hints?${params}`)
+      .then((rows) => {
+        const map: Record<string, { lastPurchase: number | null; lastCustomer: number | null }> = {};
+        rows.forEach((row) => { map[row.productId] = row; });
+        setPriceHints(map);
+      })
+      .catch(() => setPriceHints({}));
+  }, [hintCustomer?.id, editingId, posOpen]);
+
   function priceFor(product: Product, customerName = form.customerName) {
     if (customerPrices[product.id] && customerName.trim() === form.customerName.trim()) return customerPrices[product.id];
     const customer = customers.find((c) => c.name.trim() === customerName.trim());
@@ -177,7 +207,12 @@ export function SalesPage() {
     return product.salePrice;
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { loadLookups().catch(() => undefined); }, []);
+  useEffect(() => { setListPage(1); }, [search, status, pageSize]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { load().catch(() => undefined); }, 200);
+    return () => window.clearTimeout(timer);
+  }, [listPage, pageSize, search, status]);
 
   async function loadStock(warehouseId: string) {
     if (!warehouseId) return;
@@ -232,36 +267,13 @@ export function SalesPage() {
     return created.id;
   }
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return items.filter((inv) => {
-      if (status === 'due' && owed(inv) <= 0.009) return false;
-      if (status !== 'all' && status !== 'due' && inv.status !== status) return false;
-      if (!q) return true;
-      return [inv.number, inv.customer.name, inv.warehouse.name, inv.status].some((x) => x.toLowerCase().includes(q));
-    });
-  }, [items, search, status]);
-
-  const pager = usePagedList(filtered, `${search}:${status}`);
-  const dueCounts = useMemo(() => {
-    const counts = { red: 0, yellow: 0, green: 0 };
-    for (const inv of items) {
-      if (inv.status === 'CANCELLED') continue;
-      const tone = dueTone(inv.invoiceDate, inv.total - inv.paidAmount);
-      if (tone === 'red' || tone === 'yellow' || tone === 'green') counts[tone] += 1;
-    }
-    return counts;
-  }, [items]);
+  const filtered = items;
+  const dueCounts = { red: summary.red, yellow: summary.yellow, green: summary.green };
   const formDueDate = (editingId ? items.find((row) => row.id === editingId)?.invoiceDate : '') || todayIso();
-  const stats = useMemo(() => {
-    const live = items.filter((inv) => inv.status !== 'CANCELLED');
-    return {
-      count: items.length,
-      total: live.reduce((sum, inv) => sum + inv.total, 0),
-      paid: live.reduce((sum, inv) => sum + inv.paidAmount, 0),
-      due: live.reduce((sum, inv) => sum + owed(inv), 0),
-    };
-  }, [items]);
+  const stats = summary;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const pageFrom = total === 0 ? 0 : (listPage - 1) * pageSize + 1;
+  const pageTo = Math.min(listPage * pageSize, total);
   const saleColumns = useColumns('m5azen.cols.sales', [
     { id: 'number', label: 'الرقم' },
     { id: 'customer', label: 'العميل' },
@@ -392,10 +404,13 @@ export function SalesPage() {
         discount: num(l.discount),
       })),
     };
+      if (!editingId && !requestKey.current) requestKey.current = crypto.randomUUID();
       await api(editingId ? `/sales/${editingId}` : '/sales', {
         method: editingId ? 'PATCH' : 'POST',
         body: JSON.stringify(payload),
+        headers: editingId ? undefined : { 'x-idempotency-key': requestKey.current },
       });
+      requestKey.current = '';
       toast.success(editingId ? 'تم تعديل الفاتورة' : 'تم حفظ الفاتورة');
       setEditingId(null);
       setOpen(false);
@@ -544,8 +559,10 @@ export function SalesPage() {
     }
     try {
     const customerId = await resolveCustomer(posForm.customerName);
+    if (!requestKey.current) requestKey.current = crypto.randomUUID();
     await api('/sales', {
       method: 'POST',
+      headers: { 'x-idempotency-key': requestKey.current },
       body: JSON.stringify({
         customerId,
         warehouseId: posForm.warehouseId,
@@ -562,6 +579,7 @@ export function SalesPage() {
         })),
       }),
     });
+    requestKey.current = '';
     setPosOpen(false);
     load();
     loadStock(posForm.warehouseId);
@@ -582,10 +600,16 @@ export function SalesPage() {
   }
 
   async function exportRows() {
+    const params = new URLSearchParams();
+    if (search.trim()) params.set('q', search.trim());
+    if (status === 'due') params.set('due', '1');
+    else if (status !== 'all') params.set('status', status);
+    const rows = await api<Invoice[]>(`/sales${params.toString() ? `?${params}` : ''}`);
+    const ExcelJS = await loadExcel();
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('المبيعات');
     sheet.addRow(['الرقم', 'العميل', 'المخزن', 'التاريخ', 'الإجمالي', 'المدفوع', 'المتبقي', 'الحالة']);
-    filtered.forEach((inv) => sheet.addRow([inv.number, inv.customer.name, inv.warehouse.name, formatDate(inv.invoiceDate), inv.total, inv.paidAmount, owed(inv), inv.status]));
+    rows.forEach((inv) => sheet.addRow([inv.number, inv.customer.name, inv.warehouse.name, formatDate(inv.invoiceDate), inv.total, inv.paidAmount, owed(inv), inv.status]));
     const buffer = await workbook.xlsx.writeBuffer();
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([buffer]));
@@ -686,7 +710,7 @@ export function SalesPage() {
         {filtered.length === 0 ? <Empty text="لا توجد فواتير مطابقة" hint="غيّر البحث أو حالة الفاتورة" /> : listView === 'cards' ? (
           <>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {pager.slice.map((inv) => (
+              {items.map((inv) => (
                 <div key={inv.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -712,7 +736,7 @@ export function SalesPage() {
                 </div>
               ))}
             </div>
-            <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+            <Pager page={listPage} pages={pageCount} total={total} from={pageFrom} to={pageTo} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
           </>
         ) : (
           <>
@@ -731,7 +755,7 @@ export function SalesPage() {
               </tr>
             </thead>
             <tbody>
-              {pager.slice.map((inv) => (
+              {items.map((inv) => (
                 <tr key={inv.id} className={`status-${inv.status}`}>
                   {saleColumns.visible('status') && <Td><StatusBadge status={inv.status} /></Td>}
                   {saleColumns.visible('due') && <Td><DueAmount date={inv.invoiceDate} remaining={owed(inv)} /></Td>}
@@ -753,7 +777,7 @@ export function SalesPage() {
               ))}
             </tbody>
           </Table>
-          <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+          <Pager page={listPage} pages={pageCount} total={total} from={pageFrom} to={pageTo} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
           </>
         )}
       </Card>
@@ -862,12 +886,25 @@ export function SalesPage() {
                 <div className="grid gap-2 sm:grid-cols-12">
                   <div className="sm:col-span-6">
                     <Label>الصنف</Label>
-                    <Select value={l.productId} disabled={!form.warehouseId} onChange={(e) => updateLine(i, { productId: e.target.value })}>
-                      <option value="">{form.warehouseId ? 'اختر الصنف' : 'اختر المخزن أولاً'}</option>
-                      {productsForSale(form.warehouseId, lines.map((line) => line.productId)).map((p) => (
-                        <option key={p.id} value={p.id}>{p.sku} — {p.name} (متاح {availableQty(p.id, form.warehouseId)})</option>
-                      ))}
-                    </Select>
+                    <ProductPicker
+                      products={productsForSale(form.warehouseId, lines.map((line) => line.productId)).map((product) => ({
+                        id: product.id,
+                        name: product.name,
+                        sku: product.sku,
+                        barcode: product.barcode,
+                        hint: `متاح ${availableQty(product.id, form.warehouseId)}`,
+                      }))}
+                      value={l.productId}
+                      disabled={!form.warehouseId}
+                      placeholder={form.warehouseId ? 'اكتب اسم الصنف' : 'اختر المخزن أولاً'}
+                      onChange={(productId) => updateLine(i, { productId })}
+                    />
+                  </div>
+                  <div className="sm:col-span-3">
+                    <PriceHint label="آخر سعر شراء" value={l.productId ? priceHints[l.productId]?.lastPurchase : null} />
+                  </div>
+                  <div className="sm:col-span-3">
+                    <PriceHint label="آخر سعر لهذا العميل" value={l.productId ? priceHints[l.productId]?.lastCustomer : null} />
                   </div>
                   <div className="sm:col-span-2">
                     <Label>الكمية</Label>
@@ -951,7 +988,14 @@ export function SalesPage() {
                     <div key={l.productId} className="grid grid-cols-12 items-end gap-2 rounded-xl bg-slate-50 p-2">
                       <div className="col-span-5 flex items-center gap-2 text-sm font-semibold">
                         {prod?.imageFile && <img src={productImageUrl(prod.id, prod.imageFile)} alt="" className="h-10 w-10 rounded-lg object-cover" />}
-                        <span className="truncate">{prod?.name}</span>
+                        <span className="min-w-0">
+                          <span className="block truncate">{prod?.name}</span>
+                          <span className="block truncate text-[11px] font-semibold text-slate-500">
+                            شراء {priceHints[l.productId]?.lastPurchase == null ? '—' : formatMoney(priceHints[l.productId]?.lastPurchase || 0)}
+                            {' · '}
+                            العميل {priceHints[l.productId]?.lastCustomer == null ? '—' : formatMoney(priceHints[l.productId]?.lastCustomer || 0)}
+                          </span>
+                        </span>
                       </div>
                       <div className="col-span-3">
                         <Label>كمية</Label>

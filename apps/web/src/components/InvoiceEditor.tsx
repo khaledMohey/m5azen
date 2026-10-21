@@ -1,6 +1,7 @@
 import { useEffect, type ReactNode } from 'react';
 import { Plus, Trash2, X } from 'lucide-react';
 import { formatMoney } from '../lib/api';
+import { Label } from './ui';
 
 export function InvoiceEditor({
   open,
@@ -109,6 +110,17 @@ export function LineCard({
         </div>
       </div>
       {children}
+    </div>
+  );
+}
+
+export function PriceHint({ label, value }: { label: string; value?: number | null }) {
+  return (
+    <div>
+      <Label>{label}</Label>
+      <div className="flex h-10 items-center rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 text-sm font-bold tabular-nums text-slate-700">
+        {value == null ? '—' : formatMoney(value)}
+      </div>
     </div>
   );
 }

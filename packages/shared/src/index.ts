@@ -69,6 +69,8 @@ export interface LoginRequest {
   password: string;
 }
 
+export * from './access';
+
 export interface LoginResponse {
   accessToken: string;
   user: {

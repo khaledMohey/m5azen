@@ -1,16 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CalendarDays, Eye, PackageOpen, Plus, Redo2, Undo2 } from 'lucide-react';
 import { api, formatDate, formatMoney } from '../lib/api';
 import { useToast } from '../lib/feedback';
 import {
-  Badge, Button, Card, CardHeader, Empty, Input, Label, Modal, NumberInput, PageHeader, SearchBox, Select, StatCard, StatGrid, Table, Td, Th,
+  Badge, Button, Card, CardHeader, Empty, Input, Label, Modal, NumberInput, PageHeader, Pager, SearchBox, Select, StatCard, StatGrid, Table, Td, Th,
 } from '../components/ui';
-
-function isThisMonth(date: string) {
-  const d = new Date(date);
-  const now = new Date();
-  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
-}
 
 type Party = { id: string; name: string };
 
@@ -111,6 +105,12 @@ export function ReturnsPage() {
   const [loadingItems, setLoadingItems] = useState(false);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
+  const [listPage, setListPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [salesTotal, setSalesTotal] = useState(0);
+  const [purchaseTotal, setPurchaseTotal] = useState(0);
+  const [salesSummary, setSalesSummary] = useState({ count: 0, amount: 0, monthCount: 0, monthAmount: 0 });
+  const [purchaseSummary, setPurchaseSummary] = useState({ count: 0, amount: 0 });
   const [detail, setDetail] = useState<SalesReturn | PurchaseReturn | null>(null);
   const toast = useToast();
 
@@ -124,37 +124,38 @@ export function ReturnsPage() {
   const [purchaseInvoices, setPurchaseInvoices] = useState<PurchaseInvoiceGroup[]>([]);
 
   async function load() {
+    const params = new URLSearchParams({ page: String(listPage), pageSize: String(pageSize) });
+    if (search.trim()) params.set('q', search.trim());
     const [sr, pr, c, s, w] = await Promise.all([
-      api<SalesReturn[]>('/returns/sales'),
-      api<PurchaseReturn[]>('/returns/purchases'),
+      api<{ items: SalesReturn[]; total: number; summary: typeof salesSummary }>(`/returns/sales?${params}`),
+      api<{ items: PurchaseReturn[]; total: number; summary: typeof purchaseSummary }>(`/returns/purchases?${params}`),
       api<Party[]>('/customers'),
       api<Party[]>('/suppliers'),
       api<Party[]>('/warehouses'),
     ]);
-    setSalesReturns(sr);
-    setPurchaseReturns(pr);
+    setSalesReturns(sr.items);
+    setPurchaseReturns(pr.items);
+    setSalesTotal(sr.total);
+    setPurchaseTotal(pr.total);
+    setSalesSummary(sr.summary);
+    setPurchaseSummary(pr.summary);
     setCustomers(c);
     setSuppliers(s);
     setWarehouses(w);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { setListPage(1); }, [search, pageSize, tab]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { load().catch(() => undefined); }, 200);
+    return () => window.clearTimeout(timer);
+  }, [listPage, pageSize, search]);
 
-  const filteredSales = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return salesReturns;
-    return salesReturns.filter((r) =>
-      [r.number, r.customer.name, r.warehouse.name, r.salesInvoice?.number].some((x) => x?.toLowerCase().includes(q)),
-    );
-  }, [salesReturns, search]);
-
-  const filteredPurchases = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return purchaseReturns;
-    return purchaseReturns.filter((r) =>
-      [r.number, r.supplier.name, r.warehouse.name, r.purchaseInvoice?.number].some((x) => x?.toLowerCase().includes(q)),
-    );
-  }, [purchaseReturns, search]);
+  const filteredSales = salesReturns;
+  const filteredPurchases = purchaseReturns;
+  const listTotal = tab === 'sales' ? salesTotal : purchaseTotal;
+  const pageCount = Math.max(1, Math.ceil(listTotal / pageSize));
+  const pageFrom = listTotal === 0 ? 0 : (Math.min(listPage, pageCount) - 1) * pageSize + 1;
+  const pageTo = Math.min(Math.min(listPage, pageCount) * pageSize, listTotal);
 
   async function loadSalesReturnable(customerId: string) {
     if (!customerId) {
@@ -331,14 +332,14 @@ export function ReturnsPage() {
       />
 
       <StatGrid>
-        <StatCard label="مرتجعات البيع" value={formatMoney(salesReturns.reduce((s, r) => s + r.total, 0))} hint={`${salesReturns.length} مرتجع من العملاء`} icon={Undo2} tone="rose" onClick={() => setTab('sales')} active={tab === 'sales'} />
-        <StatCard label="مرتجعات الشراء" value={formatMoney(purchaseReturns.reduce((s, r) => s + r.total, 0))} hint={`${purchaseReturns.length} مرتجع للموردين`} icon={Redo2} tone="sky" onClick={() => setTab('purchases')} active={tab === 'purchases'} />
-        <StatCard label="مرتجعات بيع هذا الشهر" value={formatMoney(salesReturns.filter((r) => isThisMonth(r.returnDate)).reduce((s, r) => s + r.total, 0))} hint={`${salesReturns.filter((r) => isThisMonth(r.returnDate)).length} مرتجع`} icon={CalendarDays} tone="amber" />
+        <StatCard label="مرتجعات البيع" value={formatMoney(salesSummary.amount)} hint={`${salesSummary.count} مرتجع من العملاء`} icon={Undo2} tone="rose" onClick={() => setTab('sales')} active={tab === 'sales'} />
+        <StatCard label="مرتجعات الشراء" value={formatMoney(purchaseSummary.amount)} hint={`${purchaseSummary.count} مرتجع للموردين`} icon={Redo2} tone="sky" onClick={() => setTab('purchases')} active={tab === 'purchases'} />
+        <StatCard label="مرتجعات بيع هذا الشهر" value={formatMoney(salesSummary.monthAmount)} hint={`${salesSummary.monthCount} مرتجع`} icon={CalendarDays} tone="amber" />
         <StatCard label="وحدات مرتجعة" value={[...salesReturns, ...purchaseReturns].reduce((s, r) => s + r.lines.reduce((x, l) => x + l.quantity, 0), 0).toLocaleString('ar-EG')} hint="بيع + شراء" icon={PackageOpen} tone="violet" />
       </StatGrid>
 
       <div className="mb-4 flex w-fit rounded-xl border border-slate-200 bg-white p-1 shadow-sm no-print">
-        {([['sales', 'مرتجعات البيع', salesReturns.length], ['purchases', 'مرتجعات الشراء', purchaseReturns.length]] as const).map(([id, label, count]) => (
+        {([['sales', 'مرتجعات البيع', salesSummary.count], ['purchases', 'مرتجعات الشراء', purchaseSummary.count]] as const).map(([id, label, count]) => (
           <button key={id} type="button" onClick={() => setTab(id)} className={`inline-flex h-9 items-center gap-2 rounded-lg px-4 text-[13px] font-bold transition ${tab === id ? 'bg-brand-700 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
             {label}
             <span className={`rounded-md px-1.5 text-[11px] tabular-nums ${tab === id ? 'bg-white/20' : 'bg-slate-100'}`}>{count}</span>
@@ -349,12 +350,12 @@ export function ReturnsPage() {
       <Card>
         <CardHeader
           title={tab === 'sales' ? 'سجل مرتجعات البيع' : 'سجل مرتجعات الشراء'}
-          subtitle={`${tab === 'sales' ? filteredSales.length : filteredPurchases.length} مرتجع`}
+          subtitle={`${listTotal} مرتجع`}
           icon={tab === 'sales' ? Undo2 : Redo2}
         />
         {(tab === 'sales' ? filteredSales.length : filteredPurchases.length) === 0 ? (
           <Empty
-            text={(tab === 'sales' ? salesReturns.length : purchaseReturns.length) ? 'لا توجد نتائج مطابقة' : 'لا توجد مرتجعات بعد'}
+            text={listTotal ? 'لا توجد نتائج مطابقة' : 'لا توجد مرتجعات بعد'}
             action={<Button onClick={openModal}><Plus size={16} /> {tab === 'sales' ? 'مرتجع بيع' : 'مرتجع شراء'}</Button>}
           />
         ) : (
@@ -395,6 +396,7 @@ export function ReturnsPage() {
             </tbody>
           </Table>
         )}
+        <Pager page={listPage} pages={pageCount} total={listTotal} from={pageFrom} to={pageTo} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
       </Card>
 
       <Modal open={!!detail} onClose={() => setDetail(null)} title={detail ? `تفاصيل المرتجع ${detail.number}` : ''} wide>

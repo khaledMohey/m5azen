@@ -14,6 +14,7 @@ type User = {
   username: string;
   fullName: string;
   role: string;
+  access?: Record<string, { view: boolean; actions: string[]; fields: string[] }>;
 };
 
 type AuthCtx = {
@@ -64,4 +65,20 @@ export function useAuth() {
   const ctx = useContext(Ctx);
   if (!ctx) throw new Error('useAuth outside provider');
   return ctx;
+}
+
+export function useAccess() {
+  const { user } = useAuth();
+  return {
+    can(page: string, action = 'view') {
+      const grant = user?.access?.[page];
+      if (!user?.access) return true;
+      if (!grant?.view) return false;
+      return action === 'view' || grant.actions.includes(action);
+    },
+    see(page: string, field: string) {
+      if (!user?.access) return true;
+      return !!user.access[page]?.fields.includes(field);
+    },
+  };
 }

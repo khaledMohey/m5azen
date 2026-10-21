@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { IsArray, IsNumber, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { Role } from '@prisma/client';
@@ -40,13 +40,13 @@ export class ReturnsController {
   constructor(private service: ReturnsService) {}
 
   @Get('sales')
-  listSales() {
-    return this.service.listSalesReturns();
+  listSales(@Query('page') page?: string, @Query('pageSize') pageSize?: string, @Query('q') q?: string) {
+    return this.service.listSalesReturns({ page, pageSize, q });
   }
 
   @Get('purchases')
-  listPurchases() {
-    return this.service.listPurchaseReturns();
+  listPurchases(@Query('page') page?: string, @Query('pageSize') pageSize?: string, @Query('q') q?: string) {
+    return this.service.listPurchaseReturns({ page, pageSize, q });
   }
 
   @Get('sales/returnable/:customerId')

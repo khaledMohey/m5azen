@@ -6,7 +6,7 @@ import { api, formatDate, formatMoney } from '../lib/api';
 import { dueTone } from '../lib/due';
 import { DueAmount } from '../components/DueAmount';
 import {
-  Badge, Button, Card, CardHeader, Empty, Input, Label, Modal, NumberInput, PageHeader, SearchBox, Select, StatCard, StatGrid, Table, Td, Th,
+  Badge, Button, Card, CardHeader, Empty, Input, Label, Modal, NumberInput, PageHeader, Pager, SearchBox, Select, StatCard, StatGrid, Table, Td, Th,
 } from '../components/ui';
 
 type PayMethod = {
@@ -84,51 +84,46 @@ export function CashPage() {
   const [customerSummary, setCustomerSummary] = useState<{ balance: number; openInvoices: OpenInvoice[] } | null>(null);
   const [supplierSummary, setSupplierSummary] = useState<{ balance: number; openInvoices: OpenInvoice[] } | null>(null);
   const [search, setSearch] = useState('');
+  const [listPage, setListPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [totals, setTotals] = useState({ receipts: 0, payments: 0, movements: 0 });
+  const [amounts, setAmounts] = useState({ receipts: 0, payments: 0 });
 
   async function load() {
+    const params = new URLSearchParams({ page: String(listPage), pageSize: String(pageSize) });
+    if (search.trim()) params.set('q', search.trim());
     const [a, m, t, c, s, r, p] = await Promise.all([
       api<Account[]>('/cash/accounts'),
       api<PayMethod[]>('/cash/methods'),
-      api<Tx[]>('/cash/transactions'),
+      api<{ items: Tx[]; total: number }>(`/cash/transactions?${params}`),
       api<Party[]>('/customers'),
       api<Party[]>('/suppliers'),
-      api<Receipt[]>('/cash/receipts'),
-      api<Payment[]>('/cash/payments'),
+      api<{ items: Receipt[]; total: number; amount: number }>(`/cash/receipts?${params}`),
+      api<{ items: Payment[]; total: number; amount: number }>(`/cash/payments?${params}`),
     ]);
     setAccounts(a);
     setMethods(m);
-    setTxs(t);
+    setTxs(t.items);
     setCustomers(c);
     setSuppliers(s);
-    setReceipts(r);
-    setPayments(p);
+    setReceipts(r.items);
+    setPayments(p.items);
+    setTotals({ receipts: r.total, payments: p.total, movements: t.total });
+    setAmounts({ receipts: r.amount, payments: p.amount });
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { setListPage(1); }, [search, pageSize]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { load().catch(() => undefined); }, 200);
+    return () => window.clearTimeout(timer);
+  }, [listPage, pageSize, search]);
 
-  const filteredReceipts = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return receipts;
-    return receipts.filter((r) =>
-      [r.number, r.customer.name, r.cashAccount?.name || '', r.note || ''].some((x) => x.toLowerCase().includes(q)),
-    );
-  }, [receipts, search]);
-
-  const filteredPayments = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return payments;
-    return payments.filter((p) =>
-      [p.number, p.supplier.name, p.cashAccount?.name || '', p.note || ''].some((x) => x.toLowerCase().includes(q)),
-    );
-  }, [payments, search]);
-
-  const filteredTxs = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return txs;
-    return txs.filter((t) =>
-      [t.description, t.account.name, t.reference || ''].some((x) => x.toLowerCase().includes(q)),
-    );
-  }, [txs, search]);
+  const filteredReceipts = receipts;
+  const filteredPayments = payments;
+  const filteredTxs = txs;
+  const pageCount = (count: number) => Math.max(1, Math.ceil(count / pageSize));
+  const pageFrom = (count: number) => (count === 0 ? 0 : (Math.min(listPage, pageCount(count)) - 1) * pageSize + 1);
+  const pageTo = (count: number) => Math.min(Math.min(listPage, pageCount(count)) * pageSize, count);
 
   useEffect(() => {
     if (!receiptForm.customerId) {
@@ -306,7 +301,7 @@ export function CashPage() {
 
       {tab === 'receipts' && (
         <Card>
-          <CardHeader title="سجل التحصيلات من العملاء" subtitle={`${filteredReceipts.length} عملية · ${formatMoney(filteredReceipts.reduce((s, r) => s + r.amount, 0))}`} icon={ArrowDownLeft} />
+          <CardHeader title="سجل التحصيلات من العملاء" subtitle={`${totals.receipts} عملية · ${formatMoney(amounts.receipts)}`} icon={ArrowDownLeft} />
           {receipts.length === 0 ? <Empty /> : (
             <Table>
               <thead>
@@ -330,12 +325,13 @@ export function CashPage() {
               </tbody>
             </Table>
           )}
+          <Pager page={listPage} pages={pageCount(totals.receipts)} total={totals.receipts} from={pageFrom(totals.receipts)} to={pageTo(totals.receipts)} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
         </Card>
       )}
 
       {tab === 'payments' && (
         <Card>
-          <CardHeader title="سجل السداد للموردين" subtitle={`${filteredPayments.length} عملية · ${formatMoney(filteredPayments.reduce((s, p) => s + p.amount, 0))}`} icon={ArrowUpRight} />
+          <CardHeader title="سجل السداد للموردين" subtitle={`${totals.payments} عملية · ${formatMoney(amounts.payments)}`} icon={ArrowUpRight} />
           {payments.length === 0 ? <Empty /> : (
             <Table>
               <thead>
@@ -359,12 +355,13 @@ export function CashPage() {
               </tbody>
             </Table>
           )}
+          <Pager page={listPage} pages={pageCount(totals.payments)} total={totals.payments} from={pageFrom(totals.payments)} to={pageTo(totals.payments)} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
         </Card>
       )}
 
       {tab === 'movements' && (
         <Card>
-          <CardHeader title="كل حركات الخزنة" subtitle={`${filteredTxs.length} حركة`} icon={ArrowLeftRight} />
+          <CardHeader title="كل حركات الخزنة" subtitle={`${totals.movements} حركة`} icon={ArrowLeftRight} />
           {txs.length === 0 ? <Empty /> : (
             <Table>
               <thead>
@@ -386,6 +383,7 @@ export function CashPage() {
               </tbody>
             </Table>
           )}
+          <Pager page={listPage} pages={pageCount(totals.movements)} total={totals.movements} from={pageFrom(totals.movements)} to={pageTo(totals.movements)} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
         </Card>
       )}
 

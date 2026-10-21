@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { useAuth } from './lib/auth';
+import { NAV_ITEMS } from './lib/nav';
 import { AppLayout } from './components/AppLayout';
 import { PageSkeleton } from './components/ui';
 import { LoginPage } from './pages/LoginPage';
@@ -25,6 +26,15 @@ const AuditPage = lazy(() => import('./pages/AuditPage').then((m) => ({ default:
 const ReportBuilderPage = lazy(() => import('./pages/ReportBuilderPage').then((m) => ({ default: m.ReportBuilderPage })));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage').then((m) => ({ default: m.NotFoundPage })));
 
+function PageGuard({ page, children }: { page: string; children: React.ReactNode }) {
+  const { user } = useAuth();
+  if (user?.access && !user.access[page]?.view) {
+    const next = NAV_ITEMS.find((item) => user.access?.[item.page]?.view);
+    return <Navigate to={next?.to || '/login'} replace />;
+  }
+  return <>{children}</>;
+}
+
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <PageSkeleton />;
@@ -45,29 +55,29 @@ export default function App() {
             </PrivateRoute>
           }
         >
-          <Route index element={<DashboardPage />} />
-          <Route path="warehouses" element={<WarehousesPage />} />
-          <Route path="products" element={<ProductsPage />} />
-          <Route path="stock" element={<StockPage />} />
-          <Route path="suppliers" element={<SuppliersPage />} />
-          <Route path="customers" element={<CustomersPage />} />
-          <Route path="cash" element={<CashPage />} />
-          <Route path="sales" element={<SalesPage />} />
-          <Route path="purchases" element={<PurchasesPage />} />
-          <Route path="returns" element={<ReturnsPage />} />
-          <Route path="documents" element={<DocumentsPage />} />
-          <Route path="finance" element={<FinancePage />} />
-          <Route path="reports" element={<ReportsPage />} />
-          <Route path="analytics" element={<AnalyticsPage />} />
-          <Route path="insights" element={<InsightsPage />} />
-          <Route path="audit" element={<AuditPage />} />
+          <Route index element={<PageGuard page="dashboard"><DashboardPage /></PageGuard>} />
+          <Route path="warehouses" element={<PageGuard page="warehouses"><WarehousesPage /></PageGuard>} />
+          <Route path="products" element={<PageGuard page="products"><ProductsPage /></PageGuard>} />
+          <Route path="stock" element={<PageGuard page="stock"><StockPage /></PageGuard>} />
+          <Route path="suppliers" element={<PageGuard page="suppliers"><SuppliersPage /></PageGuard>} />
+          <Route path="customers" element={<PageGuard page="customers"><CustomersPage /></PageGuard>} />
+          <Route path="cash" element={<PageGuard page="cash"><CashPage /></PageGuard>} />
+          <Route path="sales" element={<PageGuard page="sales"><SalesPage /></PageGuard>} />
+          <Route path="purchases" element={<PageGuard page="purchases"><PurchasesPage /></PageGuard>} />
+          <Route path="returns" element={<PageGuard page="returns"><ReturnsPage /></PageGuard>} />
+          <Route path="documents" element={<PageGuard page="documents"><DocumentsPage /></PageGuard>} />
+          <Route path="finance" element={<PageGuard page="finance"><FinancePage /></PageGuard>} />
+          <Route path="reports" element={<PageGuard page="reports"><ReportsPage /></PageGuard>} />
+          <Route path="analytics" element={<PageGuard page="analytics"><AnalyticsPage /></PageGuard>} />
+          <Route path="insights" element={<PageGuard page="insights"><InsightsPage /></PageGuard>} />
+          <Route path="audit" element={<PageGuard page="audit"><AuditPage /></PageGuard>} />
           <Route path="organization" element={<Navigate to="/" replace />} />
           <Route path="import" element={<Navigate to="/products" replace />} />
           <Route path="permissions" element={<Navigate to="/" replace />} />
-          <Route path="report-builder" element={<ReportBuilderPage />} />
+          <Route path="report-builder" element={<PageGuard page="reportBuilder"><ReportBuilderPage /></PageGuard>} />
           <Route path="tasks" element={<Navigate to="/" replace />} />
           <Route path="automation" element={<Navigate to="/" replace />} />
-          <Route path="settings" element={<SettingsPage />} />
+          <Route path="settings" element={<PageGuard page="settings"><SettingsPage /></PageGuard>} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
         <Route path="*" element={<NotFoundPage />} />

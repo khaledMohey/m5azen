@@ -9,7 +9,8 @@
     "start:prod": "node -e \"process.env.NODE_ENV='production';require('./dist/main.js')\"",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:seed": "tsx prisma/seed.ts",
+    "test": "tsx --test --test-concurrency=1 test/business.test.ts"
   },
   "dependencies": {
     "@m5azen/shared": "*",

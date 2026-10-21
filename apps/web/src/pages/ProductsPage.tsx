@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Barcode, Boxes, Coins, Columns3, Package, Pencil, Plus, Tag, TrendingDown, TriangleAlert, Upload, Warehouse } from 'lucide-react';
-import ExcelJS from 'exceljs';
+import { loadExcel } from '../lib/excel';
 import { api, formatMoney, getApiBase, initialQuery, productImageUrl } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useConfirm, useToast } from '../lib/feedback';
 import { ListBar, IconAction } from '../components/ListBar';
 import { useColumns } from '../lib/columns';
-import { usePagedList } from '../lib/paging';
 import {
   Badge, Button, Card, Empty, Field, Input, Label, Modal, NumberInput, PageHeader, Pager, Select, StatCard, StatGrid, Table, Td, Th,
 } from '../components/ui';
@@ -246,6 +245,10 @@ export function ProductsPage() {
   const [pendingImage, setPendingImage] = useState<File | null>(null);
   const canImport = user?.role === 'ADMIN' || user?.role === 'WAREHOUSE';
   const [items, setItems] = useState<Product[]>([]);
+  const [listPage, setListPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [total, setTotal] = useState(0);
+  const [stats, setStats] = useState({ total: 0, low: 0, noBarcode: 0, loss: 0, stockValue: 0, units: 0, brands: [] as string[], unitNames: [] as string[] });
   const [fields, setFields] = useState<CustomField[]>([]);
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [search, setSearch] = useState(initialQuery);
@@ -279,49 +282,30 @@ export function ProductsPage() {
   const [viewMode, setViewMode] = useState<'table' | 'cards'>(() => (localStorage.getItem(VIEW_KEY) === 'cards' ? 'cards' : 'table'));
 
   async function load() {
+    const params = new URLSearchParams({ page: String(listPage), pageSize: String(pageSize) });
+    if (search.trim()) params.set('search', search.trim());
+    if (listFilter !== 'all') params.set('filter', listFilter);
     const [products, defs, cats] = await Promise.all([
-      api<Product[]>('/products'),
+      api<{ items: Product[]; total: number; summary: typeof stats }>(`/products?${params}`),
       api<CustomField[]>('/products/fields'),
       api<{ id: string; name: string }[]>('/products/categories'),
     ]);
-    setItems(products);
+    setItems(products.items);
+    setTotal(products.total);
+    setStats(products.summary);
     setFields(defs);
     setCategories(cats);
   }
 
+  useEffect(() => { setListPage(1); }, [search, listFilter, pageSize]);
   useEffect(() => {
-    load();
-  }, []);
+    const timer = window.setTimeout(() => { load().catch(() => undefined); }, 200);
+    return () => window.clearTimeout(timer);
+  }, [listPage, pageSize, search, listFilter]);
 
-  const visible = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return items.filter((product) => {
-      const qty = product.stockBalances.reduce((sum, row) => sum + row.quantity, 0);
-      const text = [product.sku, product.name, product.barcode || '', product.brand || '', product.unit].join(' ').toLowerCase();
-      if (q && !text.includes(q)) return false;
-      if (listFilter === 'low') return product.minStock > 0 && qty <= product.minStock;
-      if (listFilter === 'barcode') return !product.barcode;
-      if (listFilter === 'loss') return product.costPrice > 0 && product.salePrice < product.costPrice;
-      return true;
-    });
-  }, [items, search, listFilter]);
-
-  const stats = useMemo(() => {
-    const low = items.filter((product) => {
-      const qty = product.stockBalances.reduce((sum, row) => sum + row.quantity, 0);
-      return product.minStock > 0 && qty <= product.minStock;
-    }).length;
-    return {
-      total: items.length,
-      low,
-      noBarcode: items.filter((product) => !product.barcode).length,
-      loss: items.filter((product) => product.costPrice > 0 && product.salePrice < product.costPrice).length,
-      stockValue: items.reduce((sum, product) => sum + product.costPrice * product.stockBalances.reduce((s, row) => s + row.quantity, 0), 0),
-      units: items.reduce((sum, product) => sum + product.stockBalances.reduce((s, row) => s + row.quantity, 0), 0),
-    };
-  }, [items]);
-
-  const pager = usePagedList(visible, `${search}:${listFilter}`);
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const pageFrom = total === 0 ? 0 : (Math.min(listPage, pageCount) - 1) * pageSize + 1;
+  const pageTo = Math.min(Math.min(listPage, pageCount) * pageSize, total);
   const productColumns = useColumns('m5azen.cols.products', [
     { id: 'sku', label: 'الكود' },
     { id: 'barcode', label: 'الباركود' },
@@ -334,8 +318,8 @@ export function ProductsPage() {
     { id: 'qty', label: 'الرصيد' },
     ...fields.slice(0, 3).map((field) => ({ id: `field-${field.id}`, label: field.label })),
   ]);
-  const brands = useMemo(() => [...new Set(items.map((product) => product.brand).filter(Boolean))] as string[], [items]);
-  const units = useMemo(() => [...new Set(items.map((product) => product.unit).filter(Boolean))], [items]);
+  const brands = stats.brands;
+  const units = stats.unitNames;
 
   useEffect(() => {
     if (!createOpen) return;
@@ -346,6 +330,7 @@ export function ProductsPage() {
   }, [createOpen, createForm, createFieldValues]);
 
   async function exportProducts() {
+    const ExcelJS = await loadExcel();
     const wb = new ExcelJS.Workbook();
     const sheet = wb.addWorksheet('الأصناف');
     sheet.columns = [
@@ -355,7 +340,11 @@ export function ProductsPage() {
       { header: 'سعر البيع', key: 'salePrice', width: 14 },
       { header: 'الرصيد', key: 'qty', width: 12 },
     ];
-    items.forEach((product) => {
+    const params = new URLSearchParams();
+    if (search.trim()) params.set('search', search.trim());
+    if (listFilter !== 'all') params.set('filter', listFilter);
+    const rows = await api<Product[]>(`/products${params.toString() ? `?${params}` : ''}`);
+    rows.forEach((product) => {
       sheet.addRow({
         sku: product.sku,
         name: product.name,
@@ -618,10 +607,10 @@ export function ProductsPage() {
           columns={productColumns.columns}
           onToggleColumn={productColumns.toggle}
         />
-        {visible.length === 0 ? <Empty text="لا أصناف مطابقة" hint="غيّر البحث أو الفلتر" /> : viewMode === 'cards' ? (
+        {items.length === 0 ? <Empty text="لا أصناف مطابقة" hint="غيّر البحث أو الفلتر" /> : viewMode === 'cards' ? (
           <>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {pager.slice.map((product) => {
+              {items.map((product) => {
                 const qty = product.stockBalances.reduce((sum, row) => sum + row.quantity, 0);
                 const low = product.minStock > 0 && qty <= product.minStock;
                 return (
@@ -642,7 +631,7 @@ export function ProductsPage() {
                 );
               })}
             </div>
-            <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+            <Pager page={listPage} pages={pageCount} total={total} from={pageFrom} to={pageTo} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
           </>
         ) : (
           <>
@@ -663,7 +652,7 @@ export function ProductsPage() {
               </tr>
             </thead>
             <tbody>
-              {pager.slice.map((p) => {
+              {items.map((p) => {
                 const qty = p.stockBalances.reduce((s, b) => s + b.quantity, 0);
                 const low = p.minStock > 0 && qty <= p.minStock;
                 const valueMap = Object.fromEntries(p.fieldValues.map((fv) => [fv.fieldId, fv.value]));
@@ -715,7 +704,7 @@ export function ProductsPage() {
               })}
             </tbody>
           </Table>
-          <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+          <Pager page={listPage} pages={pageCount} total={total} from={pageFrom} to={pageTo} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
           </>
         )}
       </Card>

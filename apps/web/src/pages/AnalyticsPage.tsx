@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import ExcelJS from 'exceljs';
+import { loadExcel } from '../lib/excel';
 import { api, formatMoney, formatDate } from '../lib/api';
 import {
   CalendarRange, Crown, FileSpreadsheet, LineChart, Package, Scale, ShoppingBag, ShoppingCart, TrendingDown, TrendingUp, Users,
@@ -85,6 +85,7 @@ export function AnalyticsPage() {
 
   async function exportExcel() {
     if (!data) return;
+    const ExcelJS = await loadExcel();
     const wb = new ExcelJS.Workbook();
     const sheet = wb.addWorksheet('الأصناف');
     sheet.columns = [

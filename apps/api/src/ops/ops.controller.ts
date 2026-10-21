@@ -42,8 +42,8 @@ export class OpsController {
 
   @Get('audit')
   @Roles(Role.ADMIN)
-  audit(@Query('q') q?: string) {
-    return this.ops.audit(q);
+  audit(@Query('q') q?: string, @Query('page') page?: string, @Query('pageSize') pageSize?: string, @Query('status') status?: string) {
+    return this.ops.audit(q, { page, pageSize, status });
   }
 
   @Get('activity')

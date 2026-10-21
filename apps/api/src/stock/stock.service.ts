@@ -3,6 +3,7 @@ import { InvoiceStatus, StockMovementType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
 import { assertPeriodsOpen } from '../settings/period-lock';
+import { pageResult, readPage } from '../common/paging';
 
 const CONFIRMED: InvoiceStatus[] = [
   InvoiceStatus.CONFIRMED,
@@ -109,31 +110,48 @@ export class StockService {
     return { items, grandTotal, totalQty, count: items.length };
   }
 
-  movements(params?: {
+  async movements(params?: {
     warehouseId?: string;
     productId?: string;
     search?: string;
     limit?: number;
+    page?: string;
+    pageSize?: string;
   }) {
-    return this.prisma.stockMovement.findMany({
-      where: {
-        warehouseId: params?.warehouseId || undefined,
-        productId: params?.productId || undefined,
-        ...(params?.search
-          ? {
-              OR: [
-                { product: { name: { contains: params.search } } },
-                { product: { sku: { contains: params.search } } },
-                { reference: { contains: params.search } },
-                { note: { contains: params.search } },
-              ],
-            }
-          : {}),
-      },
-      include: { product: true, warehouse: true },
-      orderBy: { createdAt: 'desc' },
-      take: params?.limit || 200,
-    });
+    const page = readPage(params);
+    const where = {
+      warehouseId: params?.warehouseId || undefined,
+      productId: params?.productId || undefined,
+      ...(params?.search
+        ? {
+            OR: [
+              { product: { name: { contains: params.search } } },
+              { product: { sku: { contains: params.search } } },
+              { reference: { contains: params.search } },
+              { note: { contains: params.search } },
+            ],
+          }
+        : {}),
+    };
+    if (!page) {
+      return this.prisma.stockMovement.findMany({
+        where,
+        include: { product: true, warehouse: true },
+        orderBy: { createdAt: 'desc' },
+        take: params?.limit || 200,
+      });
+    }
+    const [total, items] = await Promise.all([
+      this.prisma.stockMovement.count({ where }),
+      this.prisma.stockMovement.findMany({
+        where,
+        include: { product: true, warehouse: true },
+        orderBy: { createdAt: 'desc' },
+        skip: page.skip,
+        take: page.take,
+      }),
+    ]);
+    return pageResult(items, total, page);
   }
 
   async updateMovement(

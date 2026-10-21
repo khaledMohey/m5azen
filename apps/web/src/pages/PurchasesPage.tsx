@@ -1,13 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Plus, Printer, Eye, Trash2, Pencil, ShoppingBag } from 'lucide-react';
-import ExcelJS from 'exceljs';
+import { loadExcel } from '../lib/excel';
 import { api, formatDate, formatMoney, initialQuery } from '../lib/api';
-import { dueTone } from '../lib/due';
 import { DueAmount } from '../components/DueAmount';
-import { AddLineButton, EditorErrors, EditorSection, InvoiceEditor, LineCard, SummaryRow } from '../components/InvoiceEditor';
+import { AddLineButton, EditorErrors, EditorSection, InvoiceEditor, LineCard, PriceHint, SummaryRow } from '../components/InvoiceEditor';
+import { ProductPicker } from '../components/ProductPicker';
 import { TenderEditor, type PayMethodOption, type TenderPart } from '../components/TenderEditor';
 import { useConfirm, useToast } from '../lib/feedback';
-import { usePagedList } from '../lib/paging';
 import { useColumns } from '../lib/columns';
 import { IconAction, ListBar } from '../components/ListBar';
 import {
@@ -78,6 +77,11 @@ export function PurchasesPage() {
   const confirm = useConfirm();
   const toast = useToast();
   const [items, setItems] = useState<Invoice[]>([]);
+  const [listPage, setListPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [total, setTotal] = useState(0);
+  const [summary, setSummary] = useState({ count: 0, total: 0, paid: 0, due: 0, red: 0, yellow: 0, green: 0 });
+  const requestKey = useRef('');
   const [suppliers, setSuppliers] = useState<Party[]>([]);
   const [warehouses, setWarehouses] = useState<Party[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -100,54 +104,58 @@ export function PurchasesPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [triedSave, setTriedSave] = useState(false);
+  const [priceHints, setPriceHints] = useState<Record<string, { lastSupplier: number | null; lastSale: number | null }>>({});
 
-  async function load() {
-    const [inv, s, w, p, m] = await Promise.all([
-      api<Invoice[]>('/purchases'),
+  async function loadLookups() {
+    const [s, w, p, m] = await Promise.all([
       api<Party[]>('/suppliers'),
       api<Party[]>('/warehouses'),
       api<Product[]>('/products'),
       api<PayMethodOption[]>('/cash/methods'),
     ]);
-    setItems(inv);
     setSuppliers(s);
     setWarehouses(w);
     setProducts(p);
     setMethods(m);
   }
 
-  useEffect(() => { load(); }, []);
+  async function load() {
+    const params = new URLSearchParams({ page: String(listPage), pageSize: String(pageSize) });
+    if (search.trim()) params.set('q', search.trim());
+    if (status === 'due') params.set('due', '1');
+    else if (status !== 'all') params.set('status', status);
+    const inv = await api<{ items: Invoice[]; total: number; summary: typeof summary }>(`/purchases?${params}`);
+    setItems(inv.items);
+    setTotal(inv.total);
+    setSummary(inv.summary);
+  }
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return items.filter((inv) => {
-      if (status === 'due' && owed(inv) <= 0.009) return false;
-      if (status !== 'all' && status !== 'due' && inv.status !== status) return false;
-      if (!q) return true;
-      return [inv.number, inv.supplier.name, inv.warehouse.name, inv.status].some((x) => x.toLowerCase().includes(q));
-    });
-  }, [items, search, status]);
+  useEffect(() => { loadLookups().catch(() => undefined); }, []);
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (form.supplierId) params.set('supplierId', form.supplierId);
+    if (editingId) params.set('excludeInvoiceId', editingId);
+    api<{ productId: string; lastSupplier: number | null; lastSale: number | null }[]>(`/purchases/price-hints?${params}`)
+      .then((rows) => {
+        const map: Record<string, { lastSupplier: number | null; lastSale: number | null }> = {};
+        rows.forEach((row) => { map[row.productId] = row; });
+        setPriceHints(map);
+      })
+      .catch(() => setPriceHints({}));
+  }, [form.supplierId, editingId]);
+  useEffect(() => { setListPage(1); }, [search, status, pageSize]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { load().catch(() => undefined); }, 200);
+    return () => window.clearTimeout(timer);
+  }, [listPage, pageSize, search, status]);
 
-  const pager = usePagedList(filtered, `${search}:${status}`);
-  const dueCounts = useMemo(() => {
-    const counts = { red: 0, yellow: 0, green: 0 };
-    for (const inv of items) {
-      if (inv.status === 'CANCELLED') continue;
-      const tone = dueTone(inv.invoiceDate, inv.total - inv.paidAmount);
-      if (tone === 'red' || tone === 'yellow' || tone === 'green') counts[tone] += 1;
-    }
-    return counts;
-  }, [items]);
+  const filtered = items;
+  const dueCounts = { red: summary.red, yellow: summary.yellow, green: summary.green };
   const formDueDate = (editingId ? items.find((row) => row.id === editingId)?.invoiceDate : '') || todayIso();
-  const stats = useMemo(() => {
-    const live = items.filter((inv) => inv.status !== 'CANCELLED');
-    return {
-      count: items.length,
-      total: live.reduce((sum, inv) => sum + inv.total, 0),
-      paid: live.reduce((sum, inv) => sum + inv.paidAmount, 0),
-      due: live.reduce((sum, inv) => sum + owed(inv), 0),
-    };
-  }, [items]);
+  const stats = summary;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const pageFrom = total === 0 ? 0 : (listPage - 1) * pageSize + 1;
+  const pageTo = Math.min(listPage * pageSize, total);
   const purchaseColumns = useColumns('m5azen.cols.purchases', [
     { id: 'number', label: 'الرقم' },
     { id: 'supplier', label: 'المورد' },
@@ -201,8 +209,10 @@ export function PurchasesPage() {
     if (formErrors.length) return;
     setSaving(true);
     try {
+      if (!editingId && !requestKey.current) requestKey.current = crypto.randomUUID();
       await api(editingId ? `/purchases/${editingId}` : '/purchases', {
         method: editingId ? 'PATCH' : 'POST',
+        headers: editingId ? undefined : { 'x-idempotency-key': requestKey.current },
         body: JSON.stringify({
           supplierId: form.supplierId,
           warehouseId: form.warehouseId,
@@ -222,6 +232,7 @@ export function PurchasesPage() {
           })),
         }),
       });
+      requestKey.current = '';
       toast.success(editingId ? 'تم تعديل الفاتورة' : 'تم حفظ الفاتورة');
       setEditingId(null);
       setOpen(false);
@@ -299,10 +310,16 @@ export function PurchasesPage() {
   }
 
   async function exportRows() {
+    const params = new URLSearchParams();
+    if (search.trim()) params.set('q', search.trim());
+    if (status === 'due') params.set('due', '1');
+    else if (status !== 'all') params.set('status', status);
+    const rows = await api<Invoice[]>(`/purchases${params.toString() ? `?${params}` : ''}`);
+    const ExcelJS = await loadExcel();
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('المشتريات');
     sheet.addRow(['الرقم', 'المورد', 'المخزن', 'التاريخ', 'الإجمالي', 'المدفوع', 'المتبقي', 'الحالة']);
-    filtered.forEach((inv) => sheet.addRow([inv.number, inv.supplier.name, inv.warehouse.name, formatDate(inv.invoiceDate), inv.total, inv.paidAmount, owed(inv), inv.status]));
+    rows.forEach((inv) => sheet.addRow([inv.number, inv.supplier.name, inv.warehouse.name, formatDate(inv.invoiceDate), inv.total, inv.paidAmount, owed(inv), inv.status]));
     const buffer = await workbook.xlsx.writeBuffer();
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([buffer]));
@@ -365,7 +382,7 @@ export function PurchasesPage() {
         {filtered.length === 0 ? <Empty text="لا توجد فواتير مطابقة" hint="غيّر البحث أو حالة الفاتورة" /> : listView === 'cards' ? (
           <>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {pager.slice.map((inv) => (
+              {items.map((inv) => (
                 <div key={inv.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -391,7 +408,7 @@ export function PurchasesPage() {
                 </div>
               ))}
             </div>
-            <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+            <Pager page={listPage} pages={pageCount} total={total} from={pageFrom} to={pageTo} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
           </>
         ) : (
           <>
@@ -410,7 +427,7 @@ export function PurchasesPage() {
               </tr>
             </thead>
             <tbody>
-              {pager.slice.map((inv) => (
+              {items.map((inv) => (
                 <tr key={inv.id} className={`status-${inv.status}`}>
                   {purchaseColumns.visible('status') && <Td><StatusBadge status={inv.status} /></Td>}
                   {purchaseColumns.visible('due') && <Td><DueAmount date={inv.invoiceDate} remaining={owed(inv)} /></Td>}
@@ -432,7 +449,7 @@ export function PurchasesPage() {
               ))}
             </tbody>
           </Table>
-          <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+          <Pager page={listPage} pages={pageCount} total={total} from={pageFrom} to={pageTo} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
           </>
         )}
       </Card>
@@ -533,10 +550,18 @@ export function PurchasesPage() {
                 <div className="grid gap-2 sm:grid-cols-12">
                   <div className="sm:col-span-6">
                     <Label>الصنف</Label>
-                    <Select value={l.productId} onChange={(e) => updateLine(i, { productId: e.target.value })}>
-                      <option value="">اختر الصنف</option>
-                      {products.map((p) => <option key={p.id} value={p.id}>{p.sku} — {p.name}</option>)}
-                    </Select>
+                    <ProductPicker
+                      products={products.map((product) => ({ id: product.id, name: product.name, sku: product.sku }))}
+                      value={l.productId}
+                      placeholder="اكتب اسم الصنف"
+                      onChange={(productId) => updateLine(i, { productId })}
+                    />
+                  </div>
+                  <div className="sm:col-span-3">
+                    <PriceHint label="آخر شراء من المورد" value={l.productId ? priceHints[l.productId]?.lastSupplier : null} />
+                  </div>
+                  <div className="sm:col-span-3">
+                    <PriceHint label="آخر سعر بيع" value={l.productId ? priceHints[l.productId]?.lastSale : null} />
                   </div>
                   <div className="sm:col-span-2">
                     <Label>الكمية</Label>

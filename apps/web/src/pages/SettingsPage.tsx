@@ -5,6 +5,8 @@ import { ROLE_LABELS } from '../lib/nav';
 import { useAuth } from '../lib/auth';
 import { useConfirm, useToast } from '../lib/feedback';
 import { AppearanceSettings } from '../components/AppearanceSettings';
+import { UserAccess } from '../components/UserAccess';
+import type { AccessMap } from '@m5azen/shared';
 import { Badge, Button, Card, CardHeader, Empty, Input, Label, PageHeader, Select, Table, Td, Th, type Tone } from '../components/ui';
 
 const ROLE_TONE: Record<string, Tone> = { ADMIN: 'brand', ACCOUNTANT: 'violet', WAREHOUSE: 'amber', SALES: 'emerald' };
@@ -22,7 +24,8 @@ export function SettingsPage() {
   const [commercialRegister, setCommercialRegister] = useState('');
   const [companyAddress, setCompanyAddress] = useState('');
   const [apiUrl, setApiUrl] = useState(getApiBase());
-  const [users, setUsers] = useState<{ id: string; username: string; fullName: string; role: string; isActive: boolean }[]>([]);
+  const [users, setUsers] = useState<{ id: string; username: string; fullName: string; role: string; isActive: boolean; permissions: string | null }[]>([]);
+  const [accessUser, setAccessUser] = useState<string | null>(null);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
   const [userForm, setUserForm] = useState({ username: '', password: '', fullName: '', role: 'SALES', warehouseId: '' });
   const [backups, setBackups] = useState<string[]>([]);
@@ -192,9 +195,15 @@ export function SettingsPage() {
   async function backup() {
     setBusy('backup');
     try {
-      const res = await api<{ ok: boolean; fileName?: string; message?: string }>('/settings/backup', { method: 'POST' });
-      if (res.ok) {
-        toast.success(`تم إنشاء نسخة احتياطية: ${res.fileName}`);
+      const res = await api<{ ok: boolean; fileName?: string; snapshot?: unknown; message?: string }>('/settings/backup', { method: 'POST' });
+      if (res.ok && res.snapshot && res.fileName) {
+        const blob = new Blob([JSON.stringify(res.snapshot)], { type: 'application/json' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = res.fileName;
+        link.click();
+        URL.revokeObjectURL(link.href);
+        toast.success(`تم تنزيل النسخة: ${res.fileName}`);
         setBackups(await api<string[]>('/settings/backups'));
       } else {
         toast.error(res.message || 'فشل النسخ');
@@ -286,13 +295,34 @@ export function SettingsPage() {
 
         {isAdmin && (
           <Card>
-            <CardHeader title="النسخ الاحتياطي" subtitle="نسخة من قاعدة البيانات في مجلد backups على السيرفر" icon={DatabaseBackup} />
+            <CardHeader title="النسخ الاحتياطي" subtitle="تنزيل ملف JSON بكل البيانات، أو استرجاعه بعد التأكيد" icon={DatabaseBackup} />
             <div className="mb-4 flex items-center justify-between gap-3 rounded-xl bg-gradient-to-l from-amber-50 to-white p-4 ring-1 ring-amber-100">
               <div className="text-sm">
                 <div className="font-bold text-slate-800">{backups.length} نسخة محفوظة</div>
                 <div className="text-xs text-muted">{backups[0] ? `آخر نسخة: ${backups[0]}` : 'لم يتم إنشاء نسخ بعد'}</div>
               </div>
-              <Button onClick={backup} disabled={busy === 'backup'}><DatabaseBackup size={16} /> نسخة الآن</Button>
+              <div className="flex gap-2">
+              <Button onClick={backup} disabled={busy === 'backup'}><DatabaseBackup size={16} /> تنزيل نسخة</Button>
+              <label className="inline-flex h-10 cursor-pointer items-center rounded-xl border border-slate-200 px-3 text-sm font-semibold text-slate-700">
+                استرجاع
+                <input type="file" accept="application/json,.json" className="hidden" onChange={async (event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = '';
+                  if (!file) return;
+                  const ok = await confirm({ title: 'استرجاع النسخة', message: 'الاسترجاع يستبدل البيانات الحالية بالنسخة المختارة.', confirmLabel: 'استرجاع', danger: true });
+                  if (!ok) return;
+                  setBusy('backup');
+                  try {
+                    await api('/settings/restore', { method: 'POST', body: await file.text() });
+                    toast.success('تم استرجاع النسخة');
+                  } catch (error) {
+                    toast.error(error instanceof Error ? error.message : 'تعذر الاسترجاع');
+                  } finally {
+                    setBusy('');
+                  }
+                }} />
+              </label>
+            </div>
             </div>
             {backups.length === 0 ? <Empty text="لا توجد نسخ بعد" /> : (
               <ul className="max-h-72 space-y-1.5 overflow-y-auto">
@@ -430,7 +460,7 @@ export function SettingsPage() {
           </form>
           {users.length === 0 ? <Empty text="لا يوجد مستخدمون" /> : (
             <Table>
-              <thead><tr><Th>المستخدم</Th><Th>اسم الدخول</Th><Th>الدور</Th><Th>الحالة</Th></tr></thead>
+              <thead><tr><Th>المستخدم</Th><Th>اسم الدخول</Th><Th>الدور</Th><Th>الحالة</Th><Th></Th></tr></thead>
               <tbody>
                 {users.map((u) => (
                   <tr key={u.id}>
@@ -443,6 +473,28 @@ export function SettingsPage() {
                     <Td><span className="font-mono text-xs text-slate-600" dir="ltr">{u.username}</span></Td>
                     <Td><Badge tone={ROLE_TONE[u.role] || 'slate'}>{ROLE_LABELS[u.role] || u.role}</Badge></Td>
                     <Td><Badge tone={u.isActive ? 'emerald' : 'rose'}>{u.isActive ? 'نشط' : 'موقوف'}</Badge></Td>
+                    <Td>
+                      <Button type="button" variant="secondary" onClick={() => setAccessUser(accessUser === u.id ? null : u.id)}>صلاحيات</Button>
+                      {accessUser === u.id && (
+                        <UserAccess
+                          role={u.role}
+                          value={u.permissions}
+                          busy={busy === 'user'}
+                          onSave={async (access: AccessMap) => {
+                            setBusy('user');
+                            try {
+                              await api(`/users/${u.id}`, { method: 'PATCH', body: JSON.stringify({ permissions: access }) });
+                              setUsers(await api('/users'));
+                              toast.success('تم حفظ الصلاحيات');
+                            } catch (error) {
+                              toast.error(error instanceof Error ? error.message : 'تعذر حفظ الصلاحيات');
+                            } finally {
+                              setBusy('');
+                            }
+                          }}
+                        />
+                      )}
+                    </Td>
                   </tr>
                 ))}
               </tbody>

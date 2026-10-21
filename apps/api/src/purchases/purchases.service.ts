@@ -4,6 +4,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
 import { normalizeTenders, postSupplierTenders, reversePurchaseMoney, sumTenders, syncPurchaseTenders, TenderInput } from '../cash/tenders';
 import { assertPeriodsOpen } from '../settings/period-lock';
+import { assertPaidFits, lineAmount, paidAmountOf, postStockLine, statusFromPayment, sumLineTotals, taxFromPercent } from '../common/invoice-post';
+import { claimRequest, finishRequest, releaseRequest } from '../common/idempotency';
+import { pageResult, readPage } from '../common/paging';
+import { dueTone } from '../common/due';
+import { purchasePriceHints } from '../common/price-hints';
 
 @Injectable()
 export class PurchasesService {
@@ -12,16 +17,55 @@ export class PurchasesService {
     private sequence: SequenceService,
   ) {}
 
-  findAll(status?: InvoiceStatus) {
+  priceHints(supplierId?: string, excludeInvoiceId?: string) {
+    return purchasePriceHints(this.prisma, supplierId, excludeInvoiceId);
+  }
+
+  async findAll(query?: { status?: InvoiceStatus; page?: string; pageSize?: string; q?: string; due?: string }) {
+    const page = readPage(query);
+    const where: Prisma.PurchaseInvoiceWhereInput = {};
+    if (query?.due === '1') where.status = { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] };
+    else if (query?.status) where.status = query.status;
+    if (query?.q) {
+      where.OR = [
+        { number: { contains: query.q } },
+        { supplier: { name: { contains: query.q } } },
+        { warehouse: { name: { contains: query.q } } },
+      ];
+    }
+    const include = {
+      supplier: true,
+      warehouse: true,
+      lines: { include: { product: true } },
+      payments: { orderBy: { paidAt: 'asc' as const } },
+    };
+    if (!page) {
+      return this.prisma.purchaseInvoice.findMany({ where, include, orderBy: { createdAt: 'desc' } });
+    }
+    const [total, items, all] = await Promise.all([
+      this.prisma.purchaseInvoice.count({ where }),
+      this.prisma.purchaseInvoice.findMany({ where, include, orderBy: { createdAt: 'desc' }, skip: page.skip, take: page.take }),
+      this.prisma.purchaseInvoice.findMany({ select: { status: true, total: true, paidAmount: true, invoiceDate: true } }),
+    ]);
+    const live = all.filter((row) => row.status !== InvoiceStatus.CANCELLED && row.status !== InvoiceStatus.DRAFT);
+    const summary = { count: all.length, total: 0, paid: 0, due: 0, red: 0, yellow: 0, green: 0 };
+    for (const row of live) {
+      summary.total += row.total;
+      summary.paid += row.paidAmount;
+      summary.due += Math.max(0, row.total - row.paidAmount);
+    }
+    for (const row of all) {
+      if (row.status === InvoiceStatus.CANCELLED) continue;
+      const tone = dueTone(row.invoiceDate, row.total - row.paidAmount);
+      if (tone === 'red' || tone === 'yellow' || tone === 'green') summary[tone] += 1;
+    }
+    return pageResult(items, total, page, { summary });
+  }
+
+  dues() {
     return this.prisma.purchaseInvoice.findMany({
-      where: status ? { status } : undefined,
-      include: {
-        supplier: true,
-        warehouse: true,
-        lines: { include: { product: true } },
-        payments: { orderBy: { paidAt: 'asc' } },
-      },
-      orderBy: { createdAt: 'desc' },
+      where: { status: { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] } },
+      select: { invoiceDate: true, total: true, paidAmount: true, supplierId: true },
     });
   }
 
@@ -51,33 +95,54 @@ export class PurchasesService {
     payments?: TenderInput[];
     confirm?: boolean;
     createdById?: string;
+    idempotencyKey?: string;
     lines: { productId: string; quantity: number; unitCost: number; discount?: number; batchNumber?: string; expiryDate?: string }[];
   }) {
     if (!data.lines?.length) throw new BadRequestException('أضف بنوداً للفاتورة');
+    const claim = await claimRequest(this.prisma, { key: data.idempotencyKey, scope: 'purchases', userId: data.createdById });
+    if (claim.status === 'replay') return this.findOne(claim.resourceId);
+    try {
+      const invoice = await this.insertPurchase(data);
+      await finishRequest(this.prisma, claim.key, invoice.id);
+      return invoice;
+    } catch (error) {
+      await releaseRequest(this.prisma, claim.key);
+      throw error;
+    }
+  }
+
+  private async insertPurchase(data: {
+    supplierId: string;
+    warehouseId: string;
+    invoiceDate?: string;
+    discount?: number;
+    tax?: number;
+    notes?: string;
+    paidAmount?: number;
+    payments?: TenderInput[];
+    confirm?: boolean;
+    createdById?: string;
+    lines: { productId: string; quantity: number; unitCost: number; discount?: number; batchNumber?: string; expiryDate?: string }[];
+  }) {
     await assertPeriodsOpen(this.prisma, data.invoiceDate || new Date());
     const number = await this.sequence.next('purchases', 'PUR');
     const parts = normalizeTenders(data.payments);
-    const lines = data.lines.map((l) => {
-      const total = l.quantity * l.unitCost - (l.discount || 0);
-      return {
-        productId: l.productId,
-        quantity: l.quantity,
-        unitCost: l.unitCost,
-        discount: l.discount || 0,
-        total,
-        batchNumber: l.batchNumber?.trim() || null,
-        expiryDate: l.expiryDate ? new Date(l.expiryDate) : null,
-      };
-    });
-    const subtotal = lines.reduce((s, l) => s + l.total, 0);
+    const lines = data.lines.map((l) => ({
+      productId: l.productId,
+      quantity: l.quantity,
+      unitCost: l.unitCost,
+      discount: l.discount || 0,
+      total: lineAmount(l.quantity, l.unitCost, l.discount),
+      batchNumber: l.batchNumber?.trim() || null,
+      expiryDate: l.expiryDate ? new Date(l.expiryDate) : null,
+    }));
+    const subtotal = sumLineTotals(lines);
     const discount = data.discount || 0;
-    // tax من الواجهة = نسبة مئوية (مثلاً 14 = 14%)
     const taxPercent = data.tax || 0;
-    const tax = Math.round((subtotal - discount) * taxPercent * 100) / 10000;
+    const tax = taxFromPercent(subtotal, discount, taxPercent);
     const total = subtotal - discount + tax;
-    const paidAmount = parts.length ? sumTenders(parts) : (data.paidAmount || 0);
-    if (paidAmount > total + 0.009) throw new BadRequestException('المدفوع أكبر من إجمالي الفاتورة');
-    if (data.confirm && paidAmount > 0 && !parts.length) throw new BadRequestException('قسّم المدفوع على طرق الدفع');
+    const paidAmount = paidAmountOf(parts, data.paidAmount || 0);
+    assertPaidFits(paidAmount, total, !!data.confirm, parts.length);
     const paymentNumbers: string[] = [];
     if (data.confirm) {
       for (let i = 0; i < parts.length; i++) paymentNumbers.push(await this.sequence.next('payments', 'PAY'));
@@ -86,34 +151,19 @@ export class PurchasesService {
     return this.prisma.$transaction(async (tx) => {
       let status: InvoiceStatus = InvoiceStatus.DRAFT;
       if (data.confirm) {
-        status = paidAmount >= total ? InvoiceStatus.PAID : paidAmount > 0 ? InvoiceStatus.PARTIAL : InvoiceStatus.CONFIRMED;
+        status = statusFromPayment(total, paidAmount);
         for (const line of lines) {
-          await tx.stockBalance.upsert({
-            where: {
-              warehouseId_productId: {
-                warehouseId: data.warehouseId,
-                productId: line.productId,
-              },
-            },
-            create: {
-              warehouseId: data.warehouseId,
-              productId: line.productId,
-              quantity: line.quantity,
-            },
-            update: { quantity: { increment: line.quantity } },
-          });
-          await tx.stockMovement.create({
-            data: {
-              warehouseId: data.warehouseId,
-              productId: line.productId,
-              type: StockMovementType.PURCHASE,
-              quantity: line.quantity,
-              unitCost: line.unitCost,
-              reference: number,
-              note: [line.batchNumber && `تشغيلة: ${line.batchNumber}`, line.expiryDate && `صلاحية: ${line.expiryDate.toISOString().slice(0, 10)}`]
-                .filter(Boolean)
-                .join(' | ') || null,
-            },
+          await postStockLine(tx, {
+            warehouseId: data.warehouseId,
+            productId: line.productId,
+            quantity: line.quantity,
+            unitCost: line.unitCost,
+            type: StockMovementType.PURCHASE,
+            reference: number,
+            direction: 'in',
+            note: [line.batchNumber && `تشغيلة: ${line.batchNumber}`, line.expiryDate && `صلاحية: ${line.expiryDate.toISOString().slice(0, 10)}`]
+              .filter(Boolean)
+              .join(' | ') || null,
           });
           // تكلفة الصنف = آخر سعر شراء من الفاتورة (سعر البيع لا يُمس)
           await tx.product.update({
@@ -175,29 +225,14 @@ export class PurchasesService {
     for (let i = 0; i < parts.length; i++) paymentNumbers.push(await this.sequence.next('payments', 'PAY'));
     return this.prisma.$transaction(async (tx) => {
       for (const line of inv.lines) {
-        await tx.stockBalance.upsert({
-          where: {
-            warehouseId_productId: {
-              warehouseId: inv.warehouseId,
-              productId: line.productId,
-            },
-          },
-          create: {
-            warehouseId: inv.warehouseId,
-            productId: line.productId,
-            quantity: line.quantity,
-          },
-          update: { quantity: { increment: line.quantity } },
-        });
-        await tx.stockMovement.create({
-          data: {
-            warehouseId: inv.warehouseId,
-            productId: line.productId,
-            type: StockMovementType.PURCHASE,
-            quantity: line.quantity,
-            unitCost: line.unitCost,
-            reference: inv.number,
-          },
+        await postStockLine(tx, {
+          warehouseId: inv.warehouseId,
+          productId: line.productId,
+          quantity: line.quantity,
+          unitCost: line.unitCost,
+          type: StockMovementType.PURCHASE,
+          reference: inv.number,
+          direction: 'in',
         });
         // تكلفة الصنف = آخر سعر شراء من الفاتورة (سعر البيع لا يُمس)
         await tx.product.update({
@@ -218,12 +253,7 @@ export class PurchasesService {
           paymentNumbers,
         });
       }
-      const status =
-        paidAmount >= inv.total
-          ? InvoiceStatus.PAID
-          : paidAmount > 0
-            ? InvoiceStatus.PARTIAL
-            : InvoiceStatus.CONFIRMED;
+      const status = statusFromPayment(inv.total, paidAmount);
       return tx.purchaseInvoice.update({
         where: { id },
         data: { status, paidAmount, paymentMethod: parts.length === 1 ? parts[0].methodId : '' },

@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CircleDollarSign, FileText, Hash, MapPin, Pencil, Phone, Plus, Printer, Users, Wallet } from 'lucide-react';
-import ExcelJS from 'exceljs';
+import { loadExcel } from '../lib/excel';
 import { api, formatDate, formatMoney, initialQuery } from '../lib/api';
 import { urgentInvoiceDate } from '../lib/due';
 import { DueAmount } from '../components/DueAmount';
-import { usePagedList } from '../lib/paging';
 import { useFeedback } from '../lib/feedback';
 import { useColumns } from '../lib/columns';
 import { FilterOption, IconAction, ListBar } from '../components/ListBar';
@@ -44,6 +43,10 @@ type StatementRow = {
 
 export function CustomersPage() {
   const [items, setItems] = useState<Customer[]>([]);
+  const [listPage, setListPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [total, setTotal] = useState(0);
+  const [summary, setSummary] = useState({ debitCount: 0, activeCount: 0, totalDue: 0 });
   const [search, setSearch] = useState(initialQuery);
   const [listView, setListView] = useState<'all' | 'debit'>('all');
   const [view, setView] = useState<'table' | 'cards'>(() => (localStorage.getItem(CUSTOMER_VIEW) === 'cards' ? 'cards' : 'table'));
@@ -59,15 +62,19 @@ export function CustomersPage() {
   const feedback = useFeedback();
 
   async function load() {
-    const customers = await api<Customer[]>('/customers');
-    setItems(customers);
-    const sales = await api<{ status: string; invoiceDate: string; total: number; paidAmount: number; customer: { id: string } }[]>('/sales').catch(() => []);
+    const params = new URLSearchParams({ page: String(listPage), pageSize: String(pageSize) });
+    if (search.trim()) params.set('search', search.trim());
+    if (listView === 'debit') params.set('balance', 'debit');
+    const customers = await api<{ items: Customer[]; total: number; summary: typeof summary }>(`/customers?${params}`);
+    setItems(customers.items);
+    setTotal(customers.total);
+    setSummary(customers.summary);
+    const sales = await api<{ invoiceDate: string; total: number; paidAmount: number; customerId: string }[]>('/sales/dues').catch(() => []);
     const grouped = new Map<string, { invoiceDate: string; remaining: number }[]>();
     for (const inv of sales) {
-      if (inv.status === 'CANCELLED' || inv.status === 'DRAFT') continue;
-      const rows = grouped.get(inv.customer.id) || [];
+      const rows = grouped.get(inv.customerId) || [];
       rows.push({ invoiceDate: inv.invoiceDate, remaining: inv.total - inv.paidAmount });
-      grouped.set(inv.customer.id, rows);
+      grouped.set(inv.customerId, rows);
     }
     const dates: Record<string, string> = {};
     grouped.forEach((rows, id) => {
@@ -83,24 +90,21 @@ export function CustomersPage() {
     return <span className="font-extrabold">{formatMoney(row.balance)}</span>;
   }
 
-  useEffect(() => { load(); api<{ id: string; name: string; query: string }[]>('/work/views?module=customers').then(setViews).catch(() => setViews([])); }, []);
+  useEffect(() => { api<{ id: string; name: string; query: string }[]>('/work/views?module=customers').then(setViews).catch(() => setViews([])); }, []);
+  useEffect(() => { setListPage(1); }, [search, listView, pageSize]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { load().catch(() => undefined); }, 200);
+    return () => window.clearTimeout(timer);
+  }, [listPage, pageSize, search, listView]);
 
   useEffect(() => {
     const open = new URLSearchParams(window.location.search).get('open');
     if (open) showStatement(open);
   }, []);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return items.filter((c) => {
-      const matches = !q || [c.code, c.name, c.phone || ''].some((x) => x.toLowerCase().includes(q));
-      if (!matches) return false;
-      if (listView === 'debit') return c.balance > 0;
-      return true;
-    });
-  }, [items, search, listView]);
-
-  const pager = usePagedList(filtered, `${search}:${listView}`);
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const pageFrom = total === 0 ? 0 : (Math.min(listPage, pageCount) - 1) * pageSize + 1;
+  const pageTo = Math.min(Math.min(listPage, pageCount) * pageSize, total);
   const customerColumns = useColumns('m5azen.cols.customers', [
     { id: 'balance', label: 'الرصيد' },
     { id: 'phone', label: 'الهاتف' },
@@ -112,9 +116,9 @@ export function CustomersPage() {
     code: !form.code.trim() ? 'كود العميل مطلوب' : items.some((row) => row.id !== editingId && row.code.toLowerCase() === form.code.trim().toLowerCase()) ? 'الكود مستخدم لعميل آخر' : '',
     name: form.name.trim().length < 2 ? 'اسم العميل حرفين على الأقل' : '',
   };
-  const debitCount = items.filter((row) => row.balance > 0).length;
-  const activeCount = items.filter((row) => row.isActive !== false).length;
-  const totalDue = items.reduce((sum, row) => sum + Math.max(0, row.balance), 0);
+  const debitCount = summary.debitCount;
+  const activeCount = summary.activeCount;
+  const totalDue = summary.totalDue;
 
   function openCreate() {
     setEditingId(null);
@@ -162,10 +166,15 @@ export function CustomersPage() {
   }
 
   async function exportRows() {
+    const params = new URLSearchParams();
+    if (search.trim()) params.set('search', search.trim());
+    if (listView === 'debit') params.set('balance', 'debit');
+    const rows = await api<Customer[]>(`/customers${params.toString() ? `?${params}` : ''}`);
+    const ExcelJS = await loadExcel();
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('العملاء');
     sheet.addRow(['الكود', 'الاسم', 'الهاتف', 'العنوان', 'الرصيد', 'الحالة']);
-    filtered.forEach((row) => sheet.addRow([row.code, row.name, row.phone || '', row.address || '', row.balance, row.isActive === false ? 'موقوف' : 'نشط']));
+    rows.forEach((row) => sheet.addRow([row.code, row.name, row.phone || '', row.address || '', row.balance, row.isActive === false ? 'موقوف' : 'نشط']));
     const buffer = await workbook.xlsx.writeBuffer();
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([buffer]));
@@ -255,10 +264,10 @@ export function CustomersPage() {
             ))}
           </div>
         )}
-        {filtered.length === 0 ? <Empty text="لا يوجد عملاء مطابقون" hint="غيّر البحث أو التصفية" /> : view === 'cards' ? (
+        {items.length === 0 ? <Empty text="لا يوجد عملاء مطابقون" hint="غيّر البحث أو التصفية" /> : view === 'cards' ? (
           <>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {pager.slice.map((row) => (
+              {items.map((row) => (
                 <div key={row.id} className="lift rounded-2xl border border-slate-200 bg-white p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-3">
@@ -284,7 +293,7 @@ export function CustomersPage() {
                 </div>
               ))}
             </div>
-            <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+            <Pager page={listPage} pages={pageCount} total={total} from={pageFrom} to={pageTo} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
           </>
         ) : (
           <>
@@ -301,7 +310,7 @@ export function CustomersPage() {
                 </tr>
               </thead>
               <tbody>
-                {pager.slice.map((row) => (
+                {items.map((row) => (
                   <tr key={row.id} className={row.balance > 0 ? 'row-debit' : row.balance < 0 ? 'row-credit' : ''}>
                     {customerColumns.visible('balance') && <Td>{customerBalance(row)}</Td>}
                     {customerColumns.visible('phone') && <Td><bdi dir="ltr" className="font-medium text-slate-600">{row.phone || '—'}</bdi></Td>}
@@ -330,7 +339,7 @@ export function CustomersPage() {
                 ))}
               </tbody>
             </Table>
-            <Pager page={pager.page} pages={pager.pages} total={pager.total} from={pager.from} to={pager.to} pageSize={pager.pageSize} onPageSize={pager.setPageSize} onPage={pager.setPage} />
+            <Pager page={listPage} pages={pageCount} total={total} from={pageFrom} to={pageTo} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
           </>
         )}
       </Card>
