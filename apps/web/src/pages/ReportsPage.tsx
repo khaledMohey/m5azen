@@ -160,7 +160,7 @@ type InventoryRow = {
 };
 
 type SalesReport = {
-  invoices: { number: string; total: number; paidAmount: number; status: string; invoiceDate: string; customer: { name: string }; warehouse: { name: string } }[];
+  invoices: { number: string; total: number; discount: number; paidAmount: number; status: string; invoiceDate: string; customer: { name: string }; warehouse: { name: string } }[];
   total: number;
   paid: number;
   count: number;
@@ -370,6 +370,7 @@ export function ReportsPage() {
         { header: 'العميل', key: 'customer', width: 24 },
         { header: 'المخزن', key: 'warehouse', width: 18 },
         { header: 'التاريخ', key: 'date', width: 14 },
+        { header: 'الخصم', key: 'discount', width: 14 },
         { header: 'الإجمالي', key: 'total', width: 14 },
         { header: 'المدفوع', key: 'paid', width: 14 },
         { header: 'الحالة', key: 'status', width: 12 },
@@ -380,6 +381,7 @@ export function ReportsPage() {
           customer: i.customer.name,
           warehouse: i.warehouse.name,
           date: formatDate(i.invoiceDate),
+          discount: i.discount || 0,
           total: i.total,
           paid: i.paidAmount,
           status: i.status,
@@ -673,6 +675,7 @@ export function ReportsPage() {
                 <Th>المخزن</Th>
                 {salesCols.customer && <Th>العميل</Th>}
                 {salesCols.date && <Th>التاريخ</Th>}
+                <Th>الخصم</Th>
                 {salesCols.total && <Th>الإجمالي</Th>}
                 <Th>المتبقي</Th>
                 {salesCols.status && <Th>الحالة</Th>}
@@ -685,6 +688,7 @@ export function ReportsPage() {
                   <Td className="text-slate-600">{i.warehouse.name}</Td>
                   {salesCols.customer && <Td className="font-semibold text-slate-800">{i.customer.name}</Td>}
                   {salesCols.date && <Td className="whitespace-nowrap text-slate-500">{formatDate(i.invoiceDate)}</Td>}
+                  <Td className="whitespace-nowrap text-amber-700">{i.discount ? formatMoney(i.discount) : '—'}</Td>
                   {salesCols.total && <Td className="whitespace-nowrap font-bold">{formatMoney(i.total)}</Td>}
                   <Td>{i.status === 'CANCELLED' ? formatMoney(0) : <DueAmount date={i.invoiceDate} remaining={i.total - i.paidAmount} />}</Td>
                   {salesCols.status && <Td><StatusBadge status={i.status} /></Td>}

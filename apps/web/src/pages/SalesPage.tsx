@@ -129,6 +129,7 @@ export function SalesPage() {
   const [posForm, setPosForm] = useState({
     customerName: WALK_IN_NAME,
     warehouseId: '',
+    discount: '' as number | '',
     payments: [emptyPart()] as TenderPart[],
   });
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -322,10 +323,12 @@ export function SalesPage() {
     form.confirm && form.payments.some((part) => num(part.amount) > 0 && !part.methodId) && 'اختر طريقة الدفع لكل جزء',
   ].filter(Boolean) as string[];
 
-  const posLinesTotal = posCart.reduce((s, l) => s + num(l.quantity) * num(l.unitPrice), 0);
+  const posGross = posCart.reduce((s, l) => s + num(l.quantity) * num(l.unitPrice), 0);
+  const posDiscount = num(posForm.discount);
+  const posNet = Math.max(0, Math.round((posGross - posDiscount) * 100) / 100);
   const posEntered = posForm.payments.reduce((sum, part) => sum + num(part.amount), 0);
-  const posPaid = posEntered > 0 ? posEntered : (posForm.payments[0]?.methodId ? posLinesTotal : 0);
-  const posRemaining = Math.max(0, posLinesTotal - posPaid);
+  const posPaid = posEntered > 0 ? posEntered : (posForm.payments[0]?.methodId ? posNet : 0);
+  const posRemaining = Math.max(0, posNet - posPaid);
   const posProducts = productsForSale(posForm.warehouseId).filter((p) => {
     const q = posSearch.trim().toLowerCase();
     if (!q) return true;
@@ -376,6 +379,7 @@ export function SalesPage() {
     setPosForm({
       customerName: WALK_IN_NAME,
       warehouseId: warehouses.length === 1 ? warehouses[0].id : '',
+      discount: '',
       payments: [{ methodId: methods.find((method) => method.kind === 'IMMEDIATE')?.id || methods[0]?.id || '', amount: '' }],
     });
     setPosOpen(true);
@@ -536,14 +540,18 @@ export function SalesPage() {
   }
 
   async function savePos() {
-    if (posLinesTotal > 0 && posForm.payments.some((part) => num(part.amount) > 0 && !part.methodId)) {
+    if (posDiscount > posGross + 0.001) {
+      toast.error('الخصم أكبر من إجمالي السلة');
+      return;
+    }
+    if (posNet > 0 && posForm.payments.some((part) => num(part.amount) > 0 && !part.methodId)) {
       toast.error('اختر طريقة الدفع لكل جزء');
       return;
     }
     const payments = posEntered > 0
       ? posForm.payments.filter((part) => num(part.amount) > 0).map((part) => ({ methodId: part.methodId, amount: num(part.amount) }))
-      : (posForm.payments[0]?.methodId && posLinesTotal > 0
-        ? [{ methodId: posForm.payments[0].methodId, amount: Math.round(posLinesTotal * 100) / 100 }]
+      : (posForm.payments[0]?.methodId && posNet > 0
+        ? [{ methodId: posForm.payments[0].methodId, amount: posNet }]
         : []);
     if (posForm.customerName.trim().length < 2) {
       toast.error('اكتب اسم العميل');
@@ -566,7 +574,7 @@ export function SalesPage() {
       body: JSON.stringify({
         customerId,
         warehouseId: posForm.warehouseId,
-        discount: 0,
+        discount: posDiscount,
         taxRate: 0,
         payments,
         shiftId: useShift && shift ? shift.id : undefined,
@@ -937,7 +945,7 @@ export function SalesPage() {
             </div>
             <div className="text-left">
               <div className="text-[11px] text-brand-200">الإجمالي</div>
-              <div className="text-xl font-extrabold">{formatMoney(posLinesTotal)}</div>
+              <div className="text-xl font-extrabold">{formatMoney(posNet)}</div>
             </div>
             <button type="button" className="rounded-xl bg-white/10 px-4 py-2 text-sm font-bold" onClick={() => setPosOpen(false)}>إغلاق</button>
           </div>
@@ -1015,10 +1023,16 @@ export function SalesPage() {
               <Label>العميل</Label>
               <CustomerPicker customers={customers} value={posForm.customerName} onChange={(customerName) => setPosForm({ ...posForm, customerName })} />
             </div>
+            <div>
+              <Label>خصم الفاتورة</Label>
+              <NumberInput value={posForm.discount} onValueChange={(discount) => setPosForm({ ...posForm, discount })} />
+            </div>
             <TenderEditor methods={methods} parts={posForm.payments} onChange={(payments) => setPosForm({ ...posForm, payments })} />
-            <p className="text-[11px] text-slate-500">لو الجزء الأول فاضي ومختار طريقة، يتسدد إجمالي السلة بالطريقة دي.</p>
+            <p className="text-[11px] text-slate-500">لو الجزء الأول فاضي ومختار طريقة، يتسدد الصافي بعد الخصم بالطريقة دي.</p>
             <div className="space-y-1 rounded-2xl bg-brand-900 px-4 py-3 text-sm text-white">
-              <div className="flex justify-between"><span className="text-brand-100">الإجمالي</span><strong className="text-lg">{formatMoney(posLinesTotal)}</strong></div>
+              <div className="flex justify-between text-brand-100"><span>المجموع</span><span className="text-white">{formatMoney(posGross)}</span></div>
+              <div className="flex justify-between text-brand-100"><span>الخصم</span><span className="text-white">{formatMoney(posDiscount)}</span></div>
+              <div className="flex justify-between"><span className="text-brand-100">الإجمالي</span><strong className="text-lg">{formatMoney(posNet)}</strong></div>
               <div className="flex justify-between text-brand-100"><span>المدفوع</span><span className="text-white">{formatMoney(posPaid)}</span></div>
               <div className="flex justify-between border-t border-white/10 pt-2 font-bold"><span>المتبقي</span><span>{formatMoney(posRemaining)}</span></div>
             </div>
@@ -1073,6 +1087,9 @@ export function SalesPage() {
               </tbody>
             </Table>
             <div className="mt-4 space-y-1 text-sm">
+              <div className="flex justify-between"><span>المجموع</span><span>{formatMoney(view.subtotal)}</span></div>
+              {view.discount > 0 && <div className="flex justify-between text-amber-700"><span>الخصم</span><span>{formatMoney(view.discount)}</span></div>}
+              {view.tax > 0 && <div className="flex justify-between"><span>الضريبة</span><span>{formatMoney(view.tax)}</span></div>}
               <div className="flex justify-between"><span>المدفوع</span><span>{formatMoney(view.paidAmount)}</span></div>
               <div className="flex justify-between font-bold">
                 <span>المتبقي</span>

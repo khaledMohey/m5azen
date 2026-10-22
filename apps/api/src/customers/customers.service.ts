@@ -138,11 +138,21 @@ export class CustomersService implements OnModuleInit {
         date: s.invoiceDate,
         type: 'فاتورة بيع',
         ref: s.number,
-        debit: s.total,
+        debit: s.subtotal + s.tax,
         credit: 0,
         method: methodName(s.paymentMethod),
         note: s.notes,
       });
+      if (s.discount > 0.009) {
+        rows.push({
+          date: s.invoiceDate,
+          type: 'خصم فاتورة',
+          ref: s.number,
+          debit: 0,
+          credit: s.discount,
+          note: 'يُخصم من إيراد الفاتورة ومن الربح',
+        });
+      }
     }
     for (const r of receipts) {
       rows.push({

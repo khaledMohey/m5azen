@@ -7,7 +7,7 @@
     "beforeDevCommand": "npm run dev -w @m5azen/web",
     "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "npm run build -w @m5azen/web",
-    "frontendDist": "../web/dist"
+    "frontendDist": "../../web/dist"
   },
   "app": {
     "windows": [
