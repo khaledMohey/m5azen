@@ -25,17 +25,11 @@ export class ReportsService {
   }
 
   async salesSummary(from?: string, to?: string, warehouseIds?: string[]) {
+    const invoiceDate = this.dayRange(from, to);
     const where = {
       status: { not: 'CANCELLED' as const },
       ...(warehouseIds?.length ? { warehouseId: { in: warehouseIds } } : {}),
-      ...(from || to
-        ? {
-            invoiceDate: {
-              ...(from ? { gte: new Date(from) } : {}),
-              ...(to ? { lte: new Date(to) } : {}),
-            },
-          }
-        : {}),
+      ...(invoiceDate ? { invoiceDate } : {}),
     };
     const invoices = await this.prisma.salesInvoice.findMany({
       where,
@@ -48,17 +42,11 @@ export class ReportsService {
   }
 
   async purchasesSummary(from?: string, to?: string, warehouseIds?: string[]) {
+    const invoiceDate = this.dayRange(from, to);
     const where = {
       status: { not: 'CANCELLED' as const },
       ...(warehouseIds?.length ? { warehouseId: { in: warehouseIds } } : {}),
-      ...(from || to
-        ? {
-            invoiceDate: {
-              ...(from ? { gte: new Date(from) } : {}),
-              ...(to ? { lte: new Date(to) } : {}),
-            },
-          }
-        : {}),
+      ...(invoiceDate ? { invoiceDate } : {}),
     };
     const invoices = await this.prisma.purchaseInvoice.findMany({
       where,
@@ -416,12 +404,7 @@ export class ReportsService {
   }
 
   async cashReport(from?: string, to?: string, warehouseIds?: string[]) {
-    const createdAt = from || to
-      ? {
-          ...(from ? { gte: new Date(from) } : {}),
-          ...(to ? { lte: new Date(to) } : {}),
-        }
-      : undefined;
+    const createdAt = this.dayRange(from, to);
     let references: string[] | undefined;
     if (warehouseIds?.length) {
       const [receipts, payments] = await Promise.all([
