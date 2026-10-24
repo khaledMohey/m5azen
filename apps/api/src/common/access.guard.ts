@@ -92,6 +92,23 @@ export class AccessGuard implements CanActivate {
     if (!user?.isActive) throw new ForbiddenException('ليس لديك صلاحية');
     const access = parseAccess(user.permissions, user.role);
     const action = actionFor(req.method, path, page);
+    // قراءة قائمة المخازن لازمة لاختيار المخزن في البيع/المخزون/المرتجات… من غير فتح صفحة إدارة المخازن.
+    if (
+      page === 'warehouses'
+      && req.method.toUpperCase() === 'GET'
+      && (path === '/api/warehouses' || /^\/api\/warehouses\/[^/]+$/.test(path))
+      && !canDo(access, 'warehouses', 'view')
+    ) {
+      const neededBy = [
+        'sales', 'purchases', 'stock', 'returns', 'documents', 'products', 'reports', 'customers', 'suppliers',
+      ] as const;
+      if (neededBy.some((id) => canDo(access, id, 'view'))) {
+        req.accessChecked = true;
+        req.accessPage = page;
+        req.accessKeys = [] as string[];
+        return true;
+      }
+    }
     if (!canDo(access, page, action)) throw new ForbiddenException('ليس لديك صلاحية');
     req.accessChecked = true;
     req.accessPage = page;
