@@ -1,8 +1,10 @@
-import { Body, Controller, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Query, Req } from '@nestjs/common';
 import { IsArray, IsBoolean, IsEnum, IsNumber, IsOptional, IsString } from 'class-validator';
 import { PriceList, Role } from '@prisma/client';
 import { CustomersService } from './customers.service';
 import { Roles } from '../common/guards';
+import { userWarehouseIds } from '../common/warehouse-scope';
+import { PrismaService } from '../prisma/prisma.service';
 
 class CustomerNameDto {
   @IsString() name!: string;
@@ -17,6 +19,7 @@ class CustomerDto {
   @IsOptional() @IsNumber() creditLimit?: number;
   @IsOptional() @IsEnum(PriceList) priceList?: PriceList;
   @IsOptional() @IsString() notes?: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) warehouseIds?: string[];
 }
 
 class BulkCustomerDto {
@@ -34,20 +37,26 @@ class UpdateCustomerDto {
   @IsOptional() @IsEnum(PriceList) priceList?: PriceList;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsBoolean() isActive?: boolean;
+  @IsOptional() @IsArray() @IsString({ each: true }) warehouseIds?: string[];
 }
 
 @Controller('customers')
 export class CustomersController {
-  constructor(private service: CustomersService) {}
+  constructor(
+    private service: CustomersService,
+    private prisma: PrismaService,
+  ) {}
 
   @Get()
-  findAll(
+  async findAll(
+    @Req() req: { user: { userId: string; role: string } },
     @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
     @Query('balance') balance?: string,
   ) {
-    return this.service.findAll({ search, page, pageSize, balance });
+    const warehouseIds = await userWarehouseIds(this.prisma, req.user);
+    return this.service.findAll({ search, page, pageSize, balance, warehouseIds });
   }
 
   @Get(':id')
@@ -73,8 +82,9 @@ export class CustomersController {
 
   @Post('by-name')
   @Roles(Role.ADMIN, Role.ACCOUNTANT, Role.SALES)
-  byName(@Body() dto: CustomerNameDto) {
-    return this.service.ensureByName(dto.name);
+  async byName(@Body() dto: CustomerNameDto, @Req() req: { user: { userId: string; role: string } }) {
+    const warehouseIds = await userWarehouseIds(this.prisma, req.user);
+    return this.service.ensureByName(dto.name, warehouseIds || undefined);
   }
 
   @Post('bulk')
@@ -85,8 +95,10 @@ export class CustomersController {
 
   @Post()
   @Roles(Role.ADMIN, Role.ACCOUNTANT, Role.SALES)
-  create(@Body() dto: CustomerDto) {
-    return this.service.create(dto);
+  async create(@Body() dto: CustomerDto, @Req() req: { user: { userId: string; role: string } }) {
+    const scope = await userWarehouseIds(this.prisma, req.user);
+    const warehouseIds = dto.warehouseIds?.length ? dto.warehouseIds : scope || undefined;
+    return this.service.create({ ...dto, warehouseIds });
   }
 
   @Patch(':id')

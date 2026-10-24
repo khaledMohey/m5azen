@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ArrowLeftRight, Boxes, Coins, Eye, PackageCheck, PackageX, Pencil, Printer, Trash2 } from 'lucide-react';
+import { ArrowLeftRight, Boxes, Coins, Eye, PackageCheck, PackageX, Pencil, Printer, Search, Trash2 } from 'lucide-react';
 import { api, formatDate, formatMoney } from '../lib/api';
 import { useConfirm, useToast } from '../lib/feedback';
+import { ProductPicker } from '../components/ProductPicker';
+import { productsForWarehouse } from '../lib/productWarehouse';
 import {
   Badge, Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, Pager, PrintHeader, SearchBox, Select, StatCard, StatGrid, Table, Td, Th,
 } from '../components/ui';
@@ -54,7 +56,7 @@ type Movement = {
 };
 
 type Warehouse = { id: string; name: string };
-type Product = { id: string; name: string; sku: string };
+type Product = { id: string; name: string; sku: string; barcode?: string | null; warehouses?: { warehouseId: string }[] };
 
 const MOV_LABELS: Record<string, string> = {
   PURCHASE: 'شراء',
@@ -86,6 +88,10 @@ export function StockPage() {
   const [countOpen, setCountOpen] = useState(false);
   const [expiryOpen, setExpiryOpen] = useState(false);
   const [locOpen, setLocOpen] = useState(false);
+  const [lookupOpen, setLookupOpen] = useState(false);
+  const [lookupQ, setLookupQ] = useState('');
+  const [lookupRows, setLookupRows] = useState<{ productId: string; warehouseId: string; quantity: number; sku: string; name: string; warehouseName: string }[]>([]);
+  const [lookupBusy, setLookupBusy] = useState(false);
   const [countForm, setCountForm] = useState({ warehouseId: '', productId: '', quantity: '' as number | '', note: '', mode: 'set' as 'set' | 'delta' });
   const [expiryRows, setExpiryRows] = useState<{ name: string; sku: string; expiryDate: string; warehouseName: string; invoiceNumber: string; batchNumber?: string | null; expired: boolean; quantity: number }[]>([]);
   const [locations, setLocations] = useState<{ id: string; code: string; name: string }[]>([]);
@@ -263,6 +269,9 @@ export function StockPage() {
           <>
             <Button variant="secondary" onClick={() => window.print()}>
               <Printer size={16} /> طباعة
+            </Button>
+            <Button variant="secondary" onClick={() => { setLookupOpen(true); setLookupQ(''); setLookupRows([]); }}>
+              <Search size={16} /> بحث في مخازن أخرى
             </Button>
             <Button variant="secondary" onClick={() => { setCountForm({ ...countForm, mode: 'set' }); setCountOpen(true); }}>جرد / رصيد افتتاحي</Button>
             <Button variant="secondary" onClick={async () => {
@@ -493,6 +502,62 @@ export function StockPage() {
         )}
       </Modal>
 
+      <Modal open={lookupOpen} onClose={() => setLookupOpen(false)} title="بحث مخزون مخازن أخرى" wide>
+        <div className="space-y-3">
+          <p className="text-sm text-muted">عرض فقط — عشان توجّه العميل للمخزن اللي فيه الصنف. مفيش تعديل من هنا.</p>
+          <form
+            className="flex flex-wrap gap-2"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const q = lookupQ.trim();
+              if (!q) return;
+              setLookupBusy(true);
+              try {
+                setLookupRows(await api(`/stock/lookup?q=${encodeURIComponent(q)}`));
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : 'تعذر البحث');
+              } finally {
+                setLookupBusy(false);
+              }
+            }}
+          >
+            <Input
+              className="!w-72 max-w-full"
+              value={lookupQ}
+              onChange={(e) => setLookupQ(e.target.value)}
+              placeholder="اسم الصنف أو الكود أو الباركود"
+            />
+            <Button type="submit" disabled={lookupBusy || !lookupQ.trim()}>
+              <Search size={16} /> بحث
+            </Button>
+          </form>
+          {lookupRows.length === 0 ? (
+            <Empty text={lookupQ.trim() ? 'مفيش رصيد متاح' : 'اكتب اسم الصنف وابحث'} />
+          ) : (
+            <Table>
+              <thead>
+                <tr>
+                  <Th>الصنف</Th>
+                  <Th>الكود</Th>
+                  <Th>المخزن</Th>
+                  <Th>الكمية</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {lookupRows.map((row) => (
+                  <tr key={`${row.productId}-${row.warehouseId}`}>
+                    <Td className="font-bold">{row.name}</Td>
+                    <Td><span className="font-mono text-xs" dir="ltr">{row.sku}</span></Td>
+                    <Td><Badge tone="amber">{row.warehouseName}</Badge></Td>
+                    <Td className="font-extrabold">{row.quantity.toLocaleString('ar-EG')}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          )}
+        </div>
+      </Modal>
+
       <Modal open={countOpen} onClose={() => setCountOpen(false)} title={countForm.mode === 'set' ? 'جرد أو رصيد افتتاحي' : 'تسوية كمية'}>
         <div className="space-y-3">
           <div className="flex gap-2">
@@ -508,10 +573,18 @@ export function StockPage() {
           </div>
           <div>
             <Label>الصنف</Label>
-            <Select value={countForm.productId} onChange={(e) => setCountForm({ ...countForm, productId: e.target.value })}>
-              <option value="">اختر</option>
-              {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </Select>
+            <ProductPicker
+              products={productsForWarehouse(products, countForm.warehouseId, [countForm.productId]).map((product) => ({
+                id: product.id,
+                name: product.name,
+                sku: product.sku,
+                barcode: product.barcode,
+              }))}
+              value={countForm.productId}
+              disabled={!countForm.warehouseId}
+              placeholder={countForm.warehouseId ? 'اكتب اسم الصنف' : 'اختر المخزن أولاً'}
+              onChange={(productId) => setCountForm({ ...countForm, productId })}
+            />
           </div>
           <div>
             <Label>{countForm.mode === 'set' ? 'الكمية المعدودة' : 'الفرق'}</Label>
@@ -577,10 +650,18 @@ export function StockPage() {
           }}>إضافة موقع</Button>
           <div>
             <Label>ربط صنف بموقع</Label>
-            <Select value={locForm.productId} onChange={(e) => setLocForm({ ...locForm, productId: e.target.value })}>
-              <option value="">الصنف</option>
-              {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </Select>
+            <ProductPicker
+              products={productsForWarehouse(products, locForm.warehouseId, [locForm.productId]).map((product) => ({
+                id: product.id,
+                name: product.name,
+                sku: product.sku,
+                barcode: product.barcode,
+              }))}
+              value={locForm.productId}
+              disabled={!locForm.warehouseId}
+              placeholder={locForm.warehouseId ? 'اكتب اسم الصنف' : 'اختر المخزن أولاً'}
+              onChange={(productId) => setLocForm({ ...locForm, productId })}
+            />
             <Select className="mt-2" value={locForm.locationId} onChange={(e) => setLocForm({ ...locForm, locationId: e.target.value })}>
               <option value="">الموقع</option>
               {locations.map((l) => <option key={l.id} value={l.id}>{l.code} - {l.name}</option>)}
@@ -614,10 +695,18 @@ export function StockPage() {
           </div>
           <div>
             <Label>الصنف</Label>
-            <Select value={form.productId} onChange={(e) => setForm({ ...form, productId: e.target.value })}>
-              <option value="">اختر</option>
-              {products.map((p) => <option key={p.id} value={p.id}>{p.sku} — {p.name}</option>)}
-            </Select>
+            <ProductPicker
+              products={productsForWarehouse(products, form.fromWarehouseId, [form.productId]).map((product) => ({
+                id: product.id,
+                name: product.name,
+                sku: product.sku,
+                barcode: product.barcode,
+              }))}
+              value={form.productId}
+              disabled={!form.fromWarehouseId}
+              placeholder={form.fromWarehouseId ? 'اكتب اسم الصنف' : 'اختر المخزن أولاً'}
+              onChange={(productId) => setForm({ ...form, productId })}
+            />
           </div>
           <div>
             <Label>الكمية المحوّلة</Label>

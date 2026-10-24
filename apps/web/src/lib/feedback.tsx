@@ -126,7 +126,7 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
         })}
       </div>
       {dialog && (
-        <div className="modal-backdrop fixed inset-0 z-[90] grid place-items-center bg-slate-950/50 p-4 backdrop-blur-sm" onClick={() => closeDialog(dialog.kind === 'confirm' ? false : null)}>
+        <div className="modal-backdrop fixed inset-0 z-[90] grid place-items-center bg-slate-950/50 p-4 backdrop-blur-sm">
           <div className="modal-panel w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl ring-1 ring-black/5" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-start gap-4">
               <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl ${dialog.kind === 'confirm' && dialog.options.danger ? 'bg-rose-50 text-rose-600 ring-8 ring-rose-50/60' : 'bg-brand-50 text-brand-700 ring-8 ring-brand-50/60'}`}>

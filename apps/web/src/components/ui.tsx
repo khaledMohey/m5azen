@@ -511,7 +511,7 @@ export function Modal({
 
   if (!open) return null;
   return (
-    <div className="modal-backdrop fixed inset-0 z-50 grid place-items-center bg-slate-950/50 p-4 backdrop-blur-sm" onClick={onClose}>
+    <div className="modal-backdrop fixed inset-0 z-50 grid place-items-center bg-slate-950/50 p-4 backdrop-blur-sm">
       <div
         className={`print-sheet modal-panel flex max-h-[90vh] w-full flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-black/5 ${wide ? 'max-w-4xl' : 'max-w-lg'}`}
         onClick={(e) => e.stopPropagation()}

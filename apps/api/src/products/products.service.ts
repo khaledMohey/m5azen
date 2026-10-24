@@ -54,9 +54,47 @@ export class ProductsService {
     return this.prisma.productCustomField.delete({ where: { id } });
   }
 
-  async findAll(query?: { search?: string; page?: string; pageSize?: string; filter?: string }) {
+  private productInclude() {
+    return {
+      category: true,
+      fieldValues: { include: { field: true } },
+      stockBalances: { include: { warehouse: true } },
+      warehouses: { include: { warehouse: true } },
+    };
+  }
+
+  private warehouseScope(warehouseId?: string, warehouseIds?: string[] | null) {
+    const ids = warehouseId ? [warehouseId] : warehouseIds || undefined;
+    if (!ids?.length) return undefined;
+    return {
+      OR: [
+        { warehouses: { none: {} } },
+        { warehouses: { some: { warehouseId: { in: ids } } } },
+      ],
+    };
+  }
+
+  private async syncWarehouses(productId: string, warehouseIds?: string[]) {
+    if (warehouseIds === undefined) return;
+    const unique = [...new Set(warehouseIds.map((id) => id.trim()).filter(Boolean))];
+    await this.prisma.productWarehouse.deleteMany({ where: { productId } });
+    if (unique.length) {
+      await this.prisma.productWarehouse.createMany({
+        data: unique.map((warehouseId) => ({ productId, warehouseId })),
+      });
+    }
+  }
+
+  async findAll(query?: {
+    search?: string;
+    page?: string;
+    pageSize?: string;
+    filter?: string;
+    warehouseId?: string;
+    warehouseIds?: string[] | null;
+  }) {
     const page = readPage(query);
-    const where = query?.search
+    const searchWhere = query?.search
       ? {
           OR: [
             { name: { contains: query.search } },
@@ -66,11 +104,11 @@ export class ProductsService {
           ],
         }
       : undefined;
-    const include = {
-      category: true,
-      fieldValues: { include: { field: true } },
-      stockBalances: { include: { warehouse: true } },
-    };
+    const warehouseWhere = this.warehouseScope(query?.warehouseId, query?.warehouseIds);
+    const where = searchWhere && warehouseWhere
+      ? { AND: [searchWhere, warehouseWhere] }
+      : searchWhere || warehouseWhere;
+    const include = this.productInclude();
     if (!page && (!query?.filter || query.filter === 'all')) return this.prisma.product.findMany({ where, include, orderBy: { name: 'asc' } });
     const light = await this.prisma.product.findMany({
       where,
@@ -116,10 +154,7 @@ export class ProductsService {
   async findOne(id: string) {
     const product = await this.prisma.product.findUnique({
       where: { id },
-      include: {
-        fieldValues: { include: { field: true } },
-        stockBalances: { include: { warehouse: true } },
-      },
+      include: this.productInclude(),
     });
     if (!product) throw new NotFoundException('الصنف غير موجود');
     return product;
@@ -140,22 +175,24 @@ export class ProductsService {
     packUnit?: string | null;
     packSize?: number;
     fieldValues?: { fieldId: string; value: string }[];
+    warehouseIds?: string[];
   }) {
-    const { fieldValues, ...rest } = data;
+    const { fieldValues, warehouseIds, ...rest } = data;
     rest.barcode = rest.barcode?.trim() || null;
     rest.brand = rest.brand?.trim() || null;
     rest.categoryId = rest.categoryId || null;
     rest.packUnit = rest.packUnit?.trim() || null;
     const cleaned = (fieldValues || []).filter((fv) => fv.value?.trim());
+    const uniqueWarehouses = [...new Set((warehouseIds || []).map((id) => id.trim()).filter(Boolean))];
     return this.prisma.product.create({
       data: {
         ...rest,
         fieldValues: cleaned.length ? { create: cleaned } : undefined,
+        warehouses: uniqueWarehouses.length
+          ? { create: uniqueWarehouses.map((warehouseId) => ({ warehouseId })) }
+          : undefined,
       },
-      include: {
-        fieldValues: { include: { field: true } },
-        stockBalances: true,
-      },
+      include: this.productInclude(),
     });
   }
 
@@ -176,9 +213,10 @@ export class ProductsService {
       packUnit?: string | null;
       packSize?: number;
       fieldValues?: { fieldId: string; value: string }[];
+      warehouseIds?: string[];
     },
   ) {
-    const { fieldValues, ...rest } = data;
+    const { fieldValues, warehouseIds, ...rest } = data;
     if (rest.barcode !== undefined) rest.barcode = rest.barcode?.trim() || null;
     if (rest.brand !== undefined) rest.brand = rest.brand?.trim() || null;
     if (rest.categoryId !== undefined) rest.categoryId = rest.categoryId || null;
@@ -192,13 +230,11 @@ export class ProductsService {
         });
       }
     }
+    await this.syncWarehouses(id, warehouseIds);
     return this.prisma.product.update({
       where: { id },
       data: rest,
-      include: {
-        fieldValues: { include: { field: true } },
-        stockBalances: true,
-      },
+      include: this.productInclude(),
     });
   }
 

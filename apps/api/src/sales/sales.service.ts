@@ -21,9 +21,10 @@ export class SalesService {
     return salePriceHints(this.prisma, customerId, excludeInvoiceId);
   }
 
-  async findAll(query?: { status?: InvoiceStatus; page?: string; pageSize?: string; q?: string; due?: string }) {
+  async findAll(query?: { status?: InvoiceStatus; page?: string; pageSize?: string; q?: string; due?: string; warehouseIds?: string[] | null }) {
     const page = readPage(query);
     const where: Prisma.SalesInvoiceWhereInput = {};
+    if (query?.warehouseIds?.length) where.warehouseId = { in: query.warehouseIds };
     if (query?.due === '1') where.status = { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] };
     else if (query?.status) where.status = query.status;
     if (query?.q) {
@@ -45,7 +46,7 @@ export class SalesService {
     const [total, items, all] = await Promise.all([
       this.prisma.salesInvoice.count({ where }),
       this.prisma.salesInvoice.findMany({ where, include, orderBy: { createdAt: 'desc' }, skip: page.skip, take: page.take }),
-      this.prisma.salesInvoice.findMany({ select: { status: true, total: true, paidAmount: true, invoiceDate: true } }),
+      this.prisma.salesInvoice.findMany({ where, select: { status: true, total: true, paidAmount: true, invoiceDate: true } }),
     ]);
     const live = all.filter((row) => row.status !== InvoiceStatus.CANCELLED && row.status !== InvoiceStatus.DRAFT);
     const summary = { count: all.length, total: 0, paid: 0, due: 0, red: 0, yellow: 0, green: 0 };
@@ -62,9 +63,12 @@ export class SalesService {
     return pageResult(items, total, page, { summary });
   }
 
-  dues() {
+  dues(warehouseIds?: string[] | null) {
     return this.prisma.salesInvoice.findMany({
-      where: { status: { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] } },
+      where: {
+        status: { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] },
+        ...(warehouseIds?.length ? { warehouseId: { in: warehouseIds } } : {}),
+      },
       select: { invoiceDate: true, total: true, paidAmount: true, customerId: true },
     });
   }

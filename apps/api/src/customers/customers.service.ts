@@ -1,7 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
-import { PriceList } from '@prisma/client';
+import { PriceList, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { pageResult, readPage } from '../common/paging';
+import { partyWarehouseWhere } from '../common/warehouse-scope';
 
 export const WALK_IN_CODE = 'WALKIN';
 export const WALK_IN_NAME = 'عميل سريع';
@@ -24,28 +25,61 @@ export class CustomersService implements OnModuleInit {
     });
   }
 
-  async ensureByName(name: string) {
-    const trimmed = name.trim();
-    if (trimmed.length < 2) throw new BadRequestException('اسم العميل قصير');
-    const existing = await this.prisma.customer.findFirst({ where: { name: trimmed } });
-    if (existing) return existing;
-    const code = `C${Date.now().toString(36).toUpperCase()}`;
-    return this.prisma.customer.create({ data: { code, name: trimmed } });
+  private async syncWarehouses(customerId: string, warehouseIds?: string[]) {
+    if (warehouseIds === undefined) return;
+    const unique = [...new Set(warehouseIds.map((id) => id.trim()).filter(Boolean))];
+    await this.prisma.customerWarehouse.deleteMany({ where: { customerId } });
+    if (unique.length) {
+      await this.prisma.customerWarehouse.createMany({
+        data: unique.map((warehouseId) => ({ customerId, warehouseId })),
+      });
+    }
   }
 
-  async findAll(query?: { search?: string; page?: string; pageSize?: string; balance?: string }) {
+  async ensureByName(name: string, warehouseIds?: string[]) {
+    const trimmed = name.trim();
+    if (trimmed.length < 2) throw new BadRequestException('اسم العميل قصير');
+    const existing = await this.prisma.customer.findFirst({
+      where: { name: trimmed },
+      include: { warehouses: true },
+    });
+    if (existing) {
+      if (warehouseIds?.length && !existing.warehouses.length) {
+        await this.syncWarehouses(existing.id, warehouseIds);
+      }
+      return this.findOne(existing.id);
+    }
+    const code = `C${Date.now().toString(36).toUpperCase()}`;
+    const created = await this.prisma.customer.create({
+      data: {
+        code,
+        name: trimmed,
+        warehouses: warehouseIds?.length
+          ? { create: [...new Set(warehouseIds)].map((warehouseId) => ({ warehouseId })) }
+          : undefined,
+      },
+      include: { warehouses: { include: { warehouse: true } } },
+    });
+    return created;
+  }
+
+  async findAll(query?: { search?: string; page?: string; pageSize?: string; balance?: string; warehouseIds?: string[] | null }) {
     const page = readPage(query);
-    const where = {
-      ...(query?.search ? { OR: [{ name: { contains: query.search } }, { code: { contains: query.search } }] } : {}),
-      ...(query?.balance === 'debit' ? { balance: { gt: 0 } } : {}),
-    };
+    const scope = partyWarehouseWhere(query?.warehouseIds || undefined);
+    const searchWhere = query?.search
+      ? { OR: [{ name: { contains: query.search } }, { code: { contains: query.search } }] }
+      : undefined;
+    const balanceWhere = query?.balance === 'debit' ? { balance: { gt: 0 } } : undefined;
+    const parts = [scope, searchWhere, balanceWhere].filter(Boolean) as Prisma.CustomerWhereInput[];
+    const where: Prisma.CustomerWhereInput = parts.length > 1 ? { AND: parts } : parts[0] || {};
+    const include = { warehouses: { include: { warehouse: true } } };
     if (!page) {
-      return this.prisma.customer.findMany({ where, orderBy: { name: 'asc' } });
+      return this.prisma.customer.findMany({ where, include, orderBy: { name: 'asc' } });
     }
     const [total, items, all] = await Promise.all([
       this.prisma.customer.count({ where }),
-      this.prisma.customer.findMany({ where, orderBy: { name: 'asc' }, skip: page.skip, take: page.take }),
-      this.prisma.customer.findMany({ select: { balance: true, isActive: true } }),
+      this.prisma.customer.findMany({ where, include, orderBy: { name: 'asc' }, skip: page.skip, take: page.take }),
+      this.prisma.customer.findMany({ where: scope || {}, select: { balance: true, isActive: true } }),
     ]);
     const summary = {
       debitCount: all.filter((row) => row.balance > 0).length,
@@ -56,12 +90,15 @@ export class CustomersService implements OnModuleInit {
   }
 
   async findOne(id: string) {
-    const c = await this.prisma.customer.findUnique({ where: { id } });
+    const c = await this.prisma.customer.findUnique({
+      where: { id },
+      include: { warehouses: { include: { warehouse: true } } },
+    });
     if (!c) throw new NotFoundException('العميل غير موجود');
     return c;
   }
 
-  create(data: {
+  async create(data: {
     code: string;
     name: string;
     phone?: string;
@@ -70,8 +107,17 @@ export class CustomersService implements OnModuleInit {
     creditLimit?: number;
     priceList?: PriceList;
     notes?: string;
+    warehouseIds?: string[];
   }) {
-    return this.prisma.customer.create({ data });
+    const { warehouseIds, ...rest } = data;
+    const unique = [...new Set((warehouseIds || []).map((id) => id.trim()).filter(Boolean))];
+    return this.prisma.customer.create({
+      data: {
+        ...rest,
+        warehouses: unique.length ? { create: unique.map((warehouseId) => ({ warehouseId })) } : undefined,
+      },
+      include: { warehouses: { include: { warehouse: true } } },
+    });
   }
 
   bulkSetActive(ids: string[], isActive: boolean) {
@@ -80,11 +126,18 @@ export class CustomersService implements OnModuleInit {
     return this.prisma.customer.updateMany({ where: { id: { in: unique } }, data: { isActive } }).then((result) => ({ updated: result.count }));
   }
 
-  update(id: string, data: Partial<{
+  async update(id: string, data: Partial<{
     code: string; name: string; phone: string; email: string; address: string;
     creditLimit: number; priceList: PriceList; notes: string; isActive: boolean;
+    warehouseIds: string[];
   }>) {
-    return this.prisma.customer.update({ where: { id }, data });
+    const { warehouseIds, ...rest } = data;
+    await this.syncWarehouses(id, warehouseIds);
+    return this.prisma.customer.update({
+      where: { id },
+      data: rest,
+      include: { warehouses: { include: { warehouse: true } } },
+    });
   }
 
   listPrices(customerId: string) {

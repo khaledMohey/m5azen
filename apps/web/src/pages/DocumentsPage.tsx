@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowRightLeft, ClipboardList, FileText, Plus, ShoppingBag, Trash2, XCircle } from 'lucide-react';
+import { ArrowRightLeft, ClipboardList, FileText, Plus, Printer, ShoppingBag, Trash2, XCircle } from 'lucide-react';
 import { api, formatDate, formatMoney } from '../lib/api';
 import { useConfirm, useToast } from '../lib/feedback';
+import { ProductPicker } from '../components/ProductPicker';
+import { productsForWarehouse } from '../lib/productWarehouse';
 import {
-  Button, Card, CardHeader, Empty, ErrorState, Input, Label, Modal, NumberInput, PageHeader, SearchBox, Select, StatCard, StatGrid, StatusBadge,
+  Button, Card, CardHeader, Empty, ErrorState, Input, Label, Modal, NumberInput, PageHeader, PrintHeader, SearchBox, Select, StatCard, StatGrid, StatusBadge,
   Table, TableSkeleton, Td, Th,
 } from '../components/ui';
 
@@ -22,13 +24,15 @@ type Doc = {
   total: number;
   docDate: string;
   notes?: string | null;
+  discount?: number;
+  taxRate?: number;
   customer?: { name: string } | null;
   supplier?: { name: string } | null;
   warehouse?: { name: string } | null;
-  lines?: { id: string; quantity: number; unitPrice: number; product?: { name: string } }[];
+  lines?: { id: string; quantity: number; unitPrice: number; total: number; product?: { name: string } }[];
 };
 
-type Product = { id: string; name: string; salePrice: number; costPrice: number };
+type Product = { id: string; name: string; sku?: string; salePrice: number; costPrice: number; barcode?: string | null; warehouses?: { warehouseId: string }[] };
 type Line = { productId: string; quantity: number | ''; unitPrice: number | '' };
 
 const emptyLine = (): Line => ({ productId: '', quantity: 1, unitPrice: '' });
@@ -44,6 +48,7 @@ export function DocumentsPage() {
   const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [open, setOpen] = useState(false);
+  const [printDoc, setPrintDoc] = useState<Doc | null>(null);
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'OPEN' | 'CONVERTED' | 'CANCELLED'>('ALL');
@@ -126,6 +131,11 @@ export function DocumentsPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function printQuotation(doc: Doc) {
+    setPrintDoc(doc);
+    window.setTimeout(() => window.print(), 300);
   }
 
   async function act(doc: Doc, action: 'convert' | 'cancel') {
@@ -212,12 +222,17 @@ export function DocumentsPage() {
                   <Td className="whitespace-nowrap font-extrabold">{formatMoney(doc.total)}</Td>
                   <Td><StatusBadge status={doc.status} /></Td>
                   <Td>
-                    {doc.status === 'OPEN' && (
-                      <div className="flex gap-1.5">
-                        <Button size="sm" variant="soft" disabled={busy} onClick={() => act(doc, 'convert')}><ArrowRightLeft size={14} /> تحويل لفاتورة</Button>
-                        <Button size="sm" variant="ghost" disabled={busy} onClick={() => act(doc, 'cancel')}><XCircle size={14} /> إلغاء</Button>
-                      </div>
-                    )}
+                    <div className="flex flex-wrap gap-1.5">
+                      {doc.kind === 'QUOTATION' && (
+                        <Button size="sm" variant="secondary" onClick={() => printQuotation(doc)}><Printer size={14} /> طباعة</Button>
+                      )}
+                      {doc.status === 'OPEN' && (
+                        <>
+                          <Button size="sm" variant="soft" disabled={busy} onClick={() => act(doc, 'convert')}><ArrowRightLeft size={14} /> تحويل لفاتورة</Button>
+                          <Button size="sm" variant="ghost" disabled={busy} onClick={() => act(doc, 'cancel')}><XCircle size={14} /> إلغاء</Button>
+                        </>
+                      )}
+                    </div>
                   </Td>
                 </tr>
               ))}
@@ -251,10 +266,18 @@ export function DocumentsPage() {
             </div>
             {lines.map((l, i) => (
               <div key={i} className="grid grid-cols-[1fr_90px_120px_110px_36px] items-center gap-2 border-t border-slate-100 px-3 py-2">
-                <Select value={l.productId} onChange={(e) => setLines(lines.map((x, j) => (j === i ? { ...x, productId: e.target.value, unitPrice: '' } : x)))}>
-                  <option value="">اختر الصنف</option>
-                  {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </Select>
+                <ProductPicker
+                  products={productsForWarehouse(products, form.warehouseId, lines.map((line) => line.productId)).map((product) => ({
+                    id: product.id,
+                    name: product.name,
+                    sku: product.sku || '',
+                    barcode: product.barcode,
+                  }))}
+                  value={l.productId}
+                  disabled={!form.warehouseId}
+                  placeholder={form.warehouseId ? 'اكتب اسم الصنف' : 'اختر المخزن أولاً'}
+                  onChange={(productId) => setLines(lines.map((x, j) => (j === i ? { ...x, productId, unitPrice: '' } : x)))}
+                />
                 <NumberInput value={l.quantity} onValueChange={(v) => setLines(lines.map((x, j) => (j === i ? { ...x, quantity: v } : x)))} />
                 <NumberInput value={l.unitPrice} placeholder={l.productId ? String(priceOf(l)) : ''} onValueChange={(v) => setLines(lines.map((x, j) => (j === i ? { ...x, unitPrice: v } : x)))} />
                 <span className="text-sm font-bold tabular-nums">{formatMoney((l.quantity === '' ? 0 : l.quantity) * priceOf(l))}</span>
@@ -283,6 +306,40 @@ export function DocumentsPage() {
             <Button onClick={save} disabled={busy}>حفظ المستند</Button>
           </div>
         </div>
+      </Modal>
+
+      <Modal open={!!printDoc} onClose={() => setPrintDoc(null)} title={`عرض سعر ${printDoc?.number || ''}`} wide>
+        {printDoc && (
+          <div>
+            <PrintHeader title={`عرض سعر ${printDoc.number}`} subtitle={printDoc.customer?.name || ''} />
+            <div className="mb-4 flex justify-end no-print">
+              <Button variant="secondary" onClick={() => window.print()}><Printer size={14} /> طباعة / PDF</Button>
+            </div>
+            <div className="mb-3 text-sm text-slate-600">
+              {printDoc.customer?.name || '—'} · {printDoc.warehouse?.name || 'بدون مخزن'} · {formatDate(printDoc.docDate)}
+            </div>
+            <Table>
+              <thead>
+                <tr><Th>الصنف</Th><Th>الكمية</Th><Th>السعر</Th><Th>الإجمالي</Th></tr>
+              </thead>
+              <tbody>
+                {(printDoc.lines || []).map((line) => (
+                  <tr key={line.id}>
+                    <Td>{line.product?.name || '—'}</Td>
+                    <Td>{line.quantity}</Td>
+                    <Td>{formatMoney(line.unitPrice)}</Td>
+                    <Td>{formatMoney(line.total)}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+            <div className="mt-4 flex justify-between text-lg font-extrabold">
+              <span>الإجمالي</span>
+              <span>{formatMoney(printDoc.total)}</span>
+            </div>
+            {printDoc.notes && <p className="mt-3 text-sm text-slate-600">{printDoc.notes}</p>}
+          </div>
+        )}
       </Modal>
     </div>
   );

@@ -1,9 +1,11 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { IsArray, IsNumber, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { Role } from '@prisma/client';
 import { StockService } from './stock.service';
 import { Roles } from '../common/guards';
+import { assertWarehouseAllowed, userWarehouseIds } from '../common/warehouse-scope';
+import { PrismaService } from '../prisma/prisma.service';
 
 class TransferLineDto {
   @IsString() productId!: string;
@@ -33,33 +35,56 @@ class UpdateBatchDto {
 
 @Controller('stock')
 export class StockController {
-  constructor(private service: StockService) {}
+  constructor(
+    private service: StockService,
+    private prisma: PrismaService,
+  ) {}
+
+  @Get('lookup')
+  lookup(@Query('q') q?: string) {
+    return this.service.lookup(q || '');
+  }
 
   @Get('balances')
-  balances(
+  async balances(
+    @Req() req: { user: { userId: string; role: string } },
     @Query('warehouseId') warehouseId?: string,
     @Query('search') search?: string,
   ) {
-    return this.service.balances(warehouseId, search);
+    const warehouseIds = await userWarehouseIds(this.prisma, req.user);
+    return this.service.balances(warehouseId, search, warehouseIds);
   }
 
   @Get('valuation')
-  valuation(
+  async valuation(
+    @Req() req: { user: { userId: string; role: string } },
     @Query('warehouseId') warehouseId?: string,
     @Query('search') search?: string,
   ) {
-    return this.service.valuation(warehouseId, search);
+    const warehouseIds = await userWarehouseIds(this.prisma, req.user);
+    return this.service.valuation(warehouseId, search, warehouseIds);
   }
 
   @Get('movements')
-  movements(
+  async movements(
+    @Req() req: { user: { userId: string; role: string } },
     @Query('warehouseId') warehouseId?: string,
     @Query('productId') productId?: string,
     @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
   ) {
-    return this.service.movements({ warehouseId, productId, search, page, pageSize });
+    const warehouseIds = await userWarehouseIds(this.prisma, req.user);
+    const scoped = warehouseId || (warehouseIds?.length === 1 ? warehouseIds[0] : undefined);
+    if (warehouseId) await assertWarehouseAllowed(this.prisma, req.user, warehouseId);
+    return this.service.movements({
+      warehouseId: scoped,
+      productId,
+      search,
+      page,
+      pageSize,
+      warehouseIds: warehouseId ? undefined : warehouseIds,
+    });
   }
 
   @Patch('movements/:id')
@@ -98,13 +123,21 @@ export class StockController {
 
   @Post('transfers')
   @Roles(Role.ADMIN, Role.WAREHOUSE)
-  transfer(@Body() dto: TransferDto) {
+  async transfer(
+    @Req() req: { user: { userId: string; role: string } },
+    @Body() dto: TransferDto,
+  ) {
+    await assertWarehouseAllowed(this.prisma, req.user, dto.fromWarehouseId);
     return this.service.transfer(dto);
   }
 
   @Post('adjustments')
   @Roles(Role.ADMIN, Role.WAREHOUSE)
-  adjust(@Body() dto: { warehouseId: string; note?: string; mode: 'set' | 'delta'; lines: { productId: string; quantity: number }[] }) {
+  async adjust(
+    @Req() req: { user: { userId: string; role: string } },
+    @Body() dto: { warehouseId: string; note?: string; mode: 'set' | 'delta'; lines: { productId: string; quantity: number }[] },
+  ) {
+    await assertWarehouseAllowed(this.prisma, req.user, dto.warehouseId);
     return this.service.adjust(dto);
   }
 

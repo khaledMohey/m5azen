@@ -41,12 +41,12 @@ export function ProductPicker({
 
   const matches = useMemo(() => {
     const query = normalize(text);
-    if (!query) return [];
-    return products
+    const ranked = products
       .map((product) => {
         const name = normalize(product.name);
         const sku = normalize(product.sku);
         const barcode = normalize(product.barcode || '');
+        if (!query) return { product, hit: true, rank: 2 };
         const hit = name.includes(query) || sku.includes(query) || barcode.includes(query);
         const rank = name === query || sku === query || barcode === query ? 0 : name.startsWith(query) || sku.startsWith(query) ? 1 : 2;
         return { product, hit, rank };
@@ -55,6 +55,7 @@ export function ProductPicker({
       .sort((a, b) => a.rank - b.rank || a.product.name.localeCompare(b.product.name, 'ar'))
       .slice(0, 8)
       .map((row) => row.product);
+    return ranked;
   }, [products, text]);
 
   function place() {
@@ -103,7 +104,8 @@ export function ProductPicker({
         className={invalid ? 'border-rose-300' : ''}
         autoComplete="off"
         onFocus={() => {
-          if (normalize(text) && (!selected || normalize(text) !== normalize(selected.name))) setOpen(true);
+          setOpen(true);
+          setActive(0);
         }}
         onChange={(event) => {
           setText(event.target.value);

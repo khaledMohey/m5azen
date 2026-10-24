@@ -10,7 +10,17 @@ export class UsersService {
 
   findAll() {
     return this.prisma.user.findMany({
-      select: { id: true, username: true, fullName: true, role: true, isActive: true, permissions: true, createdAt: true, lastLoginAt: true },
+      select: {
+        id: true,
+        username: true,
+        fullName: true,
+        role: true,
+        isActive: true,
+        permissions: true,
+        createdAt: true,
+        lastLoginAt: true,
+        warehouseLinks: { select: { warehouseId: true, warehouse: { select: { id: true, name: true } } } },
+      },
       orderBy: { createdAt: 'desc' },
     });
   }

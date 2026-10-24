@@ -18,10 +18,11 @@ export class StockService {
     private sequence: SequenceService,
   ) {}
 
-  balances(warehouseId?: string, search?: string) {
+  balances(warehouseId?: string, search?: string, warehouseIds?: string[] | null) {
+    const scopeIds = warehouseId ? [warehouseId] : warehouseIds || undefined;
     return this.prisma.stockBalance.findMany({
       where: {
-        ...(warehouseId ? { warehouseId } : {}),
+        ...(scopeIds?.length ? { warehouseId: { in: scopeIds } } : {}),
         ...(search
           ? {
               OR: [
@@ -42,9 +43,36 @@ export class StockService {
     });
   }
 
+  /** بحث في كل المخازن لتوجيه العميل — عرض فقط */
+  async lookup(search: string) {
+    const q = search.trim();
+    if (q.length < 1) return [];
+    const rows = await this.prisma.stockBalance.findMany({
+      where: {
+        quantity: { gt: 0 },
+        OR: [
+          { product: { name: { contains: q } } },
+          { product: { sku: { contains: q } } },
+          { product: { barcode: { contains: q } } },
+        ],
+      },
+      include: { product: true, warehouse: true },
+      orderBy: [{ product: { name: 'asc' } }, { warehouse: { name: 'asc' } }],
+      take: 40,
+    });
+    return rows.map((row) => ({
+      productId: row.productId,
+      warehouseId: row.warehouseId,
+      quantity: row.quantity,
+      sku: row.product.sku,
+      name: row.product.name,
+      warehouseName: row.warehouse.name,
+    }));
+  }
+
   /** أرصدة مع تكلفة وتفاصيل دفعات الشراء */
-  async valuation(warehouseId?: string, search?: string) {
-    const balances = await this.balances(warehouseId, search);
+  async valuation(warehouseId?: string, search?: string, warehouseIds?: string[] | null) {
+    const balances = await this.balances(warehouseId, search, warehouseIds);
 
     const productIds = [...new Set(balances.map((b) => b.productId))];
     const purchaseLines = productIds.length
@@ -117,10 +145,16 @@ export class StockService {
     limit?: number;
     page?: string;
     pageSize?: string;
+    warehouseIds?: string[] | null;
   }) {
     const page = readPage(params);
+    const scopeIds = params?.warehouseId
+      ? [params.warehouseId]
+      : params?.warehouseIds?.length
+        ? params.warehouseIds
+        : undefined;
     const where = {
-      warehouseId: params?.warehouseId || undefined,
+      ...(scopeIds?.length ? { warehouseId: { in: scopeIds } } : {}),
       productId: params?.productId || undefined,
       ...(params?.search
         ? {

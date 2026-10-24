@@ -5,6 +5,7 @@ import { api, formatDate, formatMoney, initialQuery } from '../lib/api';
 import { DueAmount } from '../components/DueAmount';
 import { AddLineButton, EditorErrors, EditorSection, InvoiceEditor, LineCard, PriceHint, SummaryRow } from '../components/InvoiceEditor';
 import { ProductPicker } from '../components/ProductPicker';
+import { productsForWarehouse } from '../lib/productWarehouse';
 import { TenderEditor, type PayMethodOption, type TenderPart } from '../components/TenderEditor';
 import { useConfirm, useToast } from '../lib/feedback';
 import { useColumns } from '../lib/columns';
@@ -14,7 +15,7 @@ import {
 } from '../components/ui';
 
 type Party = { id: string; name: string };
-type Product = { id: string; name: string; sku: string; costPrice: number };
+type Product = { id: string; name: string; sku: string; costPrice: number; warehouses?: { warehouseId: string }[]; barcode?: string | null };
 const emptyPart = (): TenderPart => ({ methodId: '', amount: '' });
 type Line = {
   id?: string;
@@ -551,9 +552,15 @@ export function PurchasesPage() {
                   <div className="sm:col-span-6">
                     <Label>الصنف</Label>
                     <ProductPicker
-                      products={products.map((product) => ({ id: product.id, name: product.name, sku: product.sku }))}
+                      products={productsForWarehouse(products, form.warehouseId, lines.map((line) => line.productId)).map((product) => ({
+                        id: product.id,
+                        name: product.name,
+                        sku: product.sku,
+                        barcode: product.barcode,
+                      }))}
                       value={l.productId}
-                      placeholder="اكتب اسم الصنف"
+                      disabled={!form.warehouseId}
+                      placeholder={form.warehouseId ? 'اكتب اسم الصنف' : 'اختر المخزن أولاً'}
                       onChange={(productId) => updateLine(i, { productId })}
                     />
                   </div>

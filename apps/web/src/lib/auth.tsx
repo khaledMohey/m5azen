@@ -14,6 +14,8 @@ type User = {
   username: string;
   fullName: string;
   role: string;
+  /** فارغ = كل المخازن (مدير أو من غير ربط). غير فارغ = مخازن المستخدم فقط. */
+  warehouseIds?: string[];
   access?: Record<string, { view: boolean; actions: string[]; fields: string[] }>;
 };
 

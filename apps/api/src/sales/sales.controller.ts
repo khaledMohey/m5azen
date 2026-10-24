@@ -4,6 +4,8 @@ import { Type } from 'class-transformer';
 import { InvoiceStatus, Role } from '@prisma/client';
 import { SalesService } from './sales.service';
 import { Roles } from '../common/guards';
+import { assertWarehouseAllowed, userWarehouseIds } from '../common/warehouse-scope';
+import { PrismaService } from '../prisma/prisma.service';
 
 class LineDto {
   @IsOptional() @IsString() id?: string;
@@ -38,22 +40,28 @@ class CreateSalesDto {
 
 @Controller('sales')
 export class SalesController {
-  constructor(private service: SalesService) {}
+  constructor(
+    private service: SalesService,
+    private prisma: PrismaService,
+  ) {}
 
   @Get()
-  findAll(
+  async findAll(
+    @Req() req: { user: { userId: string; role: string } },
     @Query('status') status?: InvoiceStatus,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
     @Query('q') q?: string,
     @Query('due') due?: string,
   ) {
-    return this.service.findAll({ status, page, pageSize, q, due });
+    const warehouseIds = await userWarehouseIds(this.prisma, req.user);
+    return this.service.findAll({ status, page, pageSize, q, due, warehouseIds });
   }
 
   @Get('dues')
-  dues() {
-    return this.service.dues();
+  async dues(@Req() req: { user: { userId: string; role: string } }) {
+    const warehouseIds = await userWarehouseIds(this.prisma, req.user);
+    return this.service.dues(warehouseIds);
   }
 
   @Get('price-hints')
@@ -68,11 +76,12 @@ export class SalesController {
 
   @Post()
   @Roles(Role.ADMIN, Role.SALES, Role.ACCOUNTANT)
-  create(
+  async create(
     @Body() dto: CreateSalesDto,
-    @Req() req: { user: { userId: string } },
+    @Req() req: { user: { userId: string; role: string } },
     @Headers('x-idempotency-key') idempotencyKey?: string,
   ) {
+    await assertWarehouseAllowed(this.prisma, req.user, dto.warehouseId);
     return this.service.create({ ...dto, createdById: req.user.userId, idempotencyKey });
   }
 

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Building2, DatabaseBackup, FileArchive, Lock, Save, Server, ShieldCheck, UserPlus, Users } from 'lucide-react';
+import { Building2, DatabaseBackup, FileArchive, Lock, Save, Server, ShieldCheck, UserPlus, Users, Warehouse } from 'lucide-react';
 import { api, getApiBase, setApiBase, setSettingsToken } from '../lib/api';
 import { ROLE_LABELS } from '../lib/nav';
 import { useAuth } from '../lib/auth';
 import { useConfirm, useToast } from '../lib/feedback';
 import { AppearanceSettings } from '../components/AppearanceSettings';
 import { UserAccess } from '../components/UserAccess';
+import { WarehouseMultiSelect } from '../components/WarehouseMultiSelect';
 import type { AccessMap } from '@m5azen/shared';
 import { Badge, Button, Card, CardHeader, Empty, Input, Label, PageHeader, Select, Table, Td, Th, type Tone } from '../components/ui';
 
@@ -13,6 +14,15 @@ const ROLE_TONE: Record<string, Tone> = { ADMIN: 'brand', ACCOUNTANT: 'violet', 
 
 type PeriodRow = { year: number; month: number; label: string; closed: boolean; closedAt: string | null; closedBy: string };
 type PeriodLog = { id: string; label: string; action: 'CLOSE' | 'REOPEN'; reason: string; userName: string; createdAt: string };
+type SettingsUser = {
+  id: string;
+  username: string;
+  fullName: string;
+  role: string;
+  isActive: boolean;
+  permissions: string | null;
+  warehouseLinks?: { warehouseId: string; warehouse?: { id: string; name: string } }[];
+};
 
 export function SettingsPage() {
   const { user } = useAuth();
@@ -24,10 +34,12 @@ export function SettingsPage() {
   const [commercialRegister, setCommercialRegister] = useState('');
   const [companyAddress, setCompanyAddress] = useState('');
   const [apiUrl, setApiUrl] = useState(getApiBase());
-  const [users, setUsers] = useState<{ id: string; username: string; fullName: string; role: string; isActive: boolean; permissions: string | null }[]>([]);
+  const [users, setUsers] = useState<SettingsUser[]>([]);
   const [accessUser, setAccessUser] = useState<string | null>(null);
+  const [warehousesUser, setWarehousesUser] = useState<string | null>(null);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
-  const [userForm, setUserForm] = useState({ username: '', password: '', fullName: '', role: 'SALES', warehouseId: '' });
+  const [userForm, setUserForm] = useState({ username: '', password: '', fullName: '', role: 'SALES', warehouseIds: [] as string[] });
+  const [editWarehouseIds, setEditWarehouseIds] = useState<string[]>([]);
   const [backups, setBackups] = useState<string[]>([]);
   const [editingLook, setEditingLook] = useState(false);
   const [busy, setBusy] = useState<'' | 'settings' | 'backup' | 'user' | 'password' | 'edit' | 'period'>('');
@@ -49,7 +61,7 @@ export function SettingsPage() {
       setCompanyAddress(s.companyAddress || '');
     }).catch(() => undefined);
     if (isAdmin) {
-      api<typeof users>('/users').then(setUsers).catch(() => setUsers([]));
+      api<SettingsUser[]>('/users').then(setUsers).catch(() => setUsers([]));
       api<{ id: string; name: string }[]>('/warehouses').then(setWarehouses).catch(() => setWarehouses([]));
       api<{ periods: PeriodRow[]; log: PeriodLog[] }>('/settings/periods').then((res) => {
         setPeriods(res.periods);
@@ -222,15 +234,36 @@ export function SettingsPage() {
     }
     setBusy('user');
     try {
-      const created = await api<{ id: string }>('/users', { method: 'POST', body: JSON.stringify(userForm) });
-      if (userForm.warehouseId) {
-        await api(`/users/${created.id}/warehouses`, { method: 'PUT', body: JSON.stringify({ warehouseIds: [userForm.warehouseId] }) });
+      const created = await api<{ id: string }>('/users', {
+        method: 'POST',
+        body: JSON.stringify({
+          username: userForm.username,
+          password: userForm.password,
+          fullName: userForm.fullName,
+          role: userForm.role,
+        }),
+      });
+      if (userForm.warehouseIds.length) {
+        await api(`/users/${created.id}/warehouses`, { method: 'PUT', body: JSON.stringify({ warehouseIds: userForm.warehouseIds }) });
       }
-      setUserForm({ username: '', password: '', fullName: '', role: 'SALES', warehouseId: '' });
+      setUserForm({ username: '', password: '', fullName: '', role: 'SALES', warehouseIds: [] });
       setUsers(await api('/users'));
       toast.success('تمت إضافة المستخدم');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'تعذر إضافة المستخدم');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function saveUserWarehouses(userId: string) {
+    setBusy('user');
+    try {
+      await api(`/users/${userId}/warehouses`, { method: 'PUT', body: JSON.stringify({ warehouseIds: editWarehouseIds }) });
+      setUsers(await api('/users'));
+      toast.success('تم حفظ مخازن المستخدم');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'تعذر حفظ المخازن');
     } finally {
       setBusy('');
     }
@@ -435,7 +468,7 @@ export function SettingsPage() {
             onSubmit={(e) => { e.preventDefault(); addUser(); }}
           >
             <div className="mb-3 flex items-center gap-2 text-[13px] font-bold text-slate-700"><UserPlus size={15} className="text-brand-600" /> مستخدم جديد</div>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <div><Label>اسم الدخول</Label><Input value={userForm.username} onChange={(e) => setUserForm({ ...userForm, username: e.target.value })} dir="ltr" autoComplete="off" /></div>
               <div><Label>الاسم</Label><Input value={userForm.fullName} onChange={(e) => setUserForm({ ...userForm, fullName: e.target.value })} /></div>
               <div><Label>كلمة السر</Label><Input type="password" value={userForm.password} onChange={(e) => setUserForm({ ...userForm, password: e.target.value })} autoComplete="new-password" /></div>
@@ -448,21 +481,28 @@ export function SettingsPage() {
                   <option value="SALES">مبيعات</option>
                 </Select>
               </div>
-              <div>
-                <Label>المخزن المسموح</Label>
-                <Select value={userForm.warehouseId} onChange={(e) => setUserForm({ ...userForm, warehouseId: e.target.value })}>
-                  <option value="">كل المخازن</option>
-                  {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-                </Select>
-              </div>
+            </div>
+            <div className="mt-3">
+              <Label>المخازن المسموحة</Label>
+              <WarehouseMultiSelect
+                warehouses={warehouses}
+                value={userForm.warehouseIds}
+                onChange={(warehouseIds) => setUserForm({ ...userForm, warehouseIds })}
+                hint="من غير اختيار = يشوف كل المخازن. مع اختيار = يدخل على مخازنه فقط (فواتير وأصناف وعملاء)"
+              />
             </div>
             <Button type="submit" className="mt-3" disabled={busy === 'user'}><UserPlus size={16} /> إضافة المستخدم</Button>
           </form>
           {users.length === 0 ? <Empty text="لا يوجد مستخدمون" /> : (
             <Table>
-              <thead><tr><Th>المستخدم</Th><Th>اسم الدخول</Th><Th>الدور</Th><Th>الحالة</Th><Th></Th></tr></thead>
+              <thead><tr><Th>المستخدم</Th><Th>اسم الدخول</Th><Th>الدور</Th><Th>المخازن</Th><Th>الحالة</Th><Th></Th></tr></thead>
               <tbody>
-                {users.map((u) => (
+                {users.map((u) => {
+                  const links = u.warehouseLinks || [];
+                  const warehouseLabel = u.role === 'ADMIN' || !links.length
+                    ? 'كل المخازن'
+                    : links.map((link) => link.warehouse?.name || link.warehouseId).join(' · ');
+                  return (
                   <tr key={u.id}>
                     <Td>
                       <div className="flex items-center gap-2.5">
@@ -472,9 +512,36 @@ export function SettingsPage() {
                     </Td>
                     <Td><span className="font-mono text-xs text-slate-600" dir="ltr">{u.username}</span></Td>
                     <Td><Badge tone={ROLE_TONE[u.role] || 'slate'}>{ROLE_LABELS[u.role] || u.role}</Badge></Td>
+                    <Td><span className="text-xs text-slate-600">{warehouseLabel}</span></Td>
                     <Td><Badge tone={u.isActive ? 'emerald' : 'rose'}>{u.isActive ? 'نشط' : 'موقوف'}</Badge></Td>
                     <Td>
-                      <Button type="button" variant="secondary" onClick={() => setAccessUser(accessUser === u.id ? null : u.id)}>صلاحيات</Button>
+                      <div className="flex flex-wrap gap-1">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => {
+                            const open = warehousesUser !== u.id;
+                            setWarehousesUser(open ? u.id : null);
+                            setEditWarehouseIds(open ? (u.warehouseLinks || []).map((link) => link.warehouseId) : []);
+                          }}
+                        >
+                          <Warehouse size={14} /> مخازن
+                        </Button>
+                        <Button type="button" variant="secondary" onClick={() => setAccessUser(accessUser === u.id ? null : u.id)}>صلاحيات</Button>
+                      </div>
+                      {warehousesUser === u.id && u.role !== 'ADMIN' && (
+                        <div className="mt-3 max-w-xl rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+                          <WarehouseMultiSelect
+                            warehouses={warehouses}
+                            value={editWarehouseIds}
+                            onChange={setEditWarehouseIds}
+                            hint="من غير اختيار = كل المخازن"
+                          />
+                          <Button type="button" className="mt-2" disabled={busy === 'user'} onClick={() => saveUserWarehouses(u.id)}>
+                            <Save size={14} /> حفظ المخازن
+                          </Button>
+                        </div>
+                      )}
                       {accessUser === u.id && (
                         <UserAccess
                           role={u.role}
@@ -496,13 +563,14 @@ export function SettingsPage() {
                       )}
                     </Td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </Table>
           )}
           <p className="mt-3 flex items-start gap-1.5 text-xs text-muted">
             <ShieldCheck size={14} className="mt-0.5 shrink-0" />
-            الفاتورة المطبوعة تستخدم الرقم الضريبي والسجل من الإعدادات. الربط المباشر مع منظومة الفاتورة الإلكترونية محتاج شهادة توقيع منفصلة.
+            ربط المستخدم بمخزن يقيّد الفواتير والأصناف والمخزون والعملاء والموردين. صلاحيات الصفحات منفصلة من زر الصلاحيات.
           </p>
         </Card>
       )}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowDownCircle, ArrowUpCircle, FileText, Hash, MapPin, Pencil, Phone, Plus, Printer, Truck, Wallet } from 'lucide-react';
+import { ArrowDownCircle, ArrowUpCircle, FileText, Hash, MapPin, Pencil, Phone, Plus, Printer, Truck, Wallet, Warehouse } from 'lucide-react';
 import { loadExcel } from '../lib/excel';
 import { api, formatDate, formatMoney, initialQuery } from '../lib/api';
 import { urgentInvoiceDate } from '../lib/due';
@@ -7,6 +7,7 @@ import { DueAmount } from '../components/DueAmount';
 import { useColumns } from '../lib/columns';
 import { useToast } from '../lib/feedback';
 import { FilterOption, IconAction, ListBar } from '../components/ListBar';
+import { WarehouseMultiSelect } from '../components/WarehouseMultiSelect';
 import {
   Badge, Button, Card, Empty, Field, Input, Modal, PageHeader, Pager, PrintHeader, StatCard, StatGrid, Table, Td, Th,
 } from '../components/ui';
@@ -19,6 +20,7 @@ type Supplier = {
   address?: string | null;
   balance: number;
   isActive?: boolean;
+  warehouses?: { warehouseId: string; warehouse?: { id: string; name: string } }[];
 };
 
 type StatementRow = {
@@ -32,9 +34,9 @@ type StatementRow = {
   note?: string | null;
 };
 
-type SupplierForm = { code: string; name: string; phone: string; address: string; isActive: boolean };
+type SupplierForm = { code: string; name: string; phone: string; address: string; isActive: boolean; warehouseIds: string[] };
 
-const emptySupplier: SupplierForm = { code: '', name: '', phone: '', address: '', isActive: true };
+const emptySupplier: SupplierForm = { code: '', name: '', phone: '', address: '', isActive: true, warehouseIds: [] };
 const SUPPLIER_VIEW = 'm5azen.suppliersView';
 
 export function SuppliersPage() {
@@ -53,6 +55,7 @@ export function SuppliersPage() {
   const [stmtOpen, setStmtOpen] = useState(false);
   const [statement, setStatement] = useState<{ supplier: Supplier; statement: StatementRow[]; balance: number } | null>(null);
   const [form, setForm] = useState<SupplierForm>(emptySupplier);
+  const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
   const [dueDates, setDueDates] = useState<Record<string, string>>({});
   const columns = useColumns('m5azen.cols.suppliers', [
     { id: 'balance', label: 'الرصيد' },
@@ -91,6 +94,9 @@ export function SuppliersPage() {
     return <span className="font-extrabold">{formatMoney(row.balance)}</span>;
   }
 
+  useEffect(() => {
+    api<{ id: string; name: string }[]>('/warehouses').then(setWarehouses).catch(() => setWarehouses([]));
+  }, []);
   useEffect(() => { setListPage(1); }, [search, listView, pageSize]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -123,6 +129,7 @@ export function SuppliersPage() {
       phone: row.phone || '',
       address: row.address || '',
       isActive: row.isActive !== false,
+      warehouseIds: (row.warehouses || []).map((link) => link.warehouseId),
     });
     setOpen(true);
   }
@@ -136,6 +143,7 @@ export function SuppliersPage() {
         name: form.name.trim(),
         phone: form.phone.trim(),
         address: form.address.trim(),
+        warehouseIds: form.warehouseIds,
         ...(editingId ? { isActive: form.isActive } : {}),
       };
       await api(editingId ? `/suppliers/${editingId}` : '/suppliers', {
@@ -299,6 +307,13 @@ export function SuppliersPage() {
           </Field>
           <Field label="العنوان" icon={<MapPin size={16} />}>
             <Input value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} />
+          </Field>
+          <Field label="المخازن" icon={<Warehouse size={16} />} hint="المورد يظهر ليوزر المخازن دي فقط">
+            <WarehouseMultiSelect
+              warehouses={warehouses}
+              value={form.warehouseIds}
+              onChange={(warehouseIds) => setForm({ ...form, warehouseIds })}
+            />
           </Field>
           {editingId && (
             <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">

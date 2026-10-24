@@ -48,6 +48,7 @@ type Product = {
   imageFile?: string | null;
   fieldValues: { fieldId: string; value: string; field: CustomField }[];
   stockBalances: { quantity: number; warehouse: { name: string } }[];
+  warehouses?: { warehouseId: string; warehouse?: { id: string; name: string } }[];
   category?: { id: string; name: string } | null;
 };
 
@@ -66,6 +67,7 @@ const emptyCreate = {
   categoryId: '',
   packUnit: '',
   packSize: '' as number | '',
+  warehouseIds: [] as string[],
 };
 
 type ProductForm = typeof emptyCreate;
@@ -91,9 +93,9 @@ function ProductFormWizard({
   form,
   setForm,
   issues,
-  brands,
   units,
   categories,
+  warehouses,
   fields,
   fieldValues,
   setFieldValues,
@@ -105,9 +107,9 @@ function ProductFormWizard({
   form: ProductForm;
   setForm: (form: ProductForm) => void;
   issues: ReturnType<typeof productIssues>;
-  brands: string[];
   units: string[];
   categories: { id: string; name: string }[];
+  warehouses: { id: string; name: string }[];
   fields: CustomField[];
   fieldValues: Record<string, string>;
   setFieldValues: (values: Record<string, string>) => void;
@@ -152,10 +154,6 @@ function ProductFormWizard({
           <Field label="الباركود" icon={<Barcode size={16} />} error={issues.errors.barcode}>
             <Input value={form.barcode} onChange={(event) => setForm({ ...form, barcode: event.target.value })} />
           </Field>
-          <Field label="الماركة" icon={<Tag size={16} />} hint="تظهر ماركات محفوظة أثناء الكتابة">
-            <Input list="product-brands" value={form.brand} onChange={(event) => setForm({ ...form, brand: event.target.value })} />
-            <datalist id="product-brands">{brands.map((brand) => <option key={brand} value={brand} />)}</datalist>
-          </Field>
           <Field label="التصنيف" icon={<Warehouse size={16} />}>
             <Select value={form.categoryId} onChange={(event) => setForm({ ...form, categoryId: event.target.value })}>
               <option value="">بدون</option>
@@ -171,6 +169,29 @@ function ProductFormWizard({
               setCategoryName('');
             }}>إضافة</Button>
           </div>
+          <Field label="المخازن" icon={<Warehouse size={16} />} hint="اختار مخزن أو أكتر. لو مفيش اختيار، الصنف يبقى لكل المخازن">
+            <div className="flex flex-wrap gap-2 rounded-xl border border-slate-200 bg-white p-3">
+              {warehouses.length === 0 ? <span className="text-xs text-muted">مفيش مخازن</span> : warehouses.map((warehouse) => {
+                const checked = form.warehouseIds.includes(warehouse.id);
+                return (
+                  <label key={warehouse.id} className={`inline-flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-bold ${checked ? 'border-brand-300 bg-brand-50 text-brand-800' : 'border-slate-200 text-slate-600'}`}>
+                    <input
+                      type="checkbox"
+                      className="accent-[var(--color-brand-700)]"
+                      checked={checked}
+                      onChange={(event) => {
+                        const warehouseIds = event.target.checked
+                          ? [...form.warehouseIds, warehouse.id]
+                          : form.warehouseIds.filter((id) => id !== warehouse.id);
+                        setForm({ ...form, warehouseIds });
+                      }}
+                    />
+                    {warehouse.name}
+                  </label>
+                );
+              })}
+            </div>
+          </Field>
         </div>
       )}
       {step === 1 && (
@@ -251,6 +272,7 @@ export function ProductsPage() {
   const [stats, setStats] = useState({ total: 0, low: 0, noBarcode: 0, loss: 0, stockValue: 0, units: 0, brands: [] as string[], unitNames: [] as string[] });
   const [fields, setFields] = useState<CustomField[]>([]);
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
+  const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
   const [search, setSearch] = useState(initialQuery);
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -258,19 +280,7 @@ export function ProductsPage() {
   const [editing, setEditing] = useState<Product | null>(null);
   const [createForm, setCreateForm] = useState(emptyCreate);
   const [createFieldValues, setCreateFieldValues] = useState<Record<string, string>>({});
-  const [editForm, setEditForm] = useState({
-    sku: '',
-    name: '',
-    unit: 'قطعة',
-    salePrice: '' as number | '',
-    wholesalePrice: '' as number | '',
-    minStock: '' as number | '',
-    barcode: '',
-    brand: '',
-    categoryId: '',
-    packUnit: '',
-    packSize: '' as number | '',
-  });
+  const [editForm, setEditForm] = useState({ ...emptyCreate });
   const [editFieldValues, setEditFieldValues] = useState<Record<string, string>>({});
   const [fieldForm, setFieldForm] = useState({
     name: '',
@@ -285,16 +295,18 @@ export function ProductsPage() {
     const params = new URLSearchParams({ page: String(listPage), pageSize: String(pageSize) });
     if (search.trim()) params.set('search', search.trim());
     if (listFilter !== 'all') params.set('filter', listFilter);
-    const [products, defs, cats] = await Promise.all([
+    const [products, defs, cats, wh] = await Promise.all([
       api<{ items: Product[]; total: number; summary: typeof stats }>(`/products?${params}`),
       api<CustomField[]>('/products/fields'),
       api<{ id: string; name: string }[]>('/products/categories'),
+      api<{ id: string; name: string }[]>('/warehouses'),
     ]);
     setItems(products.items);
     setTotal(products.total);
     setStats(products.summary);
     setFields(defs);
     setCategories(cats);
+    setWarehouses(wh);
   }
 
   useEffect(() => { setListPage(1); }, [search, listFilter, pageSize]);
@@ -318,7 +330,6 @@ export function ProductsPage() {
     { id: 'qty', label: 'الرصيد' },
     ...fields.slice(0, 3).map((field) => ({ id: `field-${field.id}`, label: field.label })),
   ]);
-  const brands = stats.brands;
   const units = stats.unitNames;
 
   useEffect(() => {
@@ -406,6 +417,7 @@ export function ProductsPage() {
           categoryId: createForm.categoryId || undefined,
           packUnit: createForm.packUnit,
           packSize: createForm.packSize === '' ? 1 : createForm.packSize,
+          warehouseIds: createForm.warehouseIds,
           fieldValues: fieldPayload(createFieldValues),
         }),
       });
@@ -436,6 +448,7 @@ export function ProductsPage() {
       categoryId: p.categoryId || '',
       packUnit: p.packUnit || '',
       packSize: p.packSize || '',
+      warehouseIds: (p.warehouses || []).map((row) => row.warehouseId),
     });
     const map: Record<string, string> = {};
     for (const fv of p.fieldValues) map[fv.fieldId] = fv.value;
@@ -465,6 +478,7 @@ export function ProductsPage() {
           categoryId: editForm.categoryId || null,
           packUnit: editForm.packUnit,
           packSize: editForm.packSize === '' ? 1 : editForm.packSize,
+          warehouseIds: editForm.warehouseIds,
           fieldValues: fieldPayload(editFieldValues),
         }),
       });
@@ -721,9 +735,9 @@ export function ProductsPage() {
           form={createForm}
           setForm={setCreateForm}
           issues={productIssues(createForm, items)}
-          brands={brands}
           units={units}
           categories={categories}
+          warehouses={warehouses}
           fields={fields}
           fieldValues={createFieldValues}
           setFieldValues={setCreateFieldValues}
@@ -765,9 +779,9 @@ export function ProductsPage() {
             form={editForm}
             setForm={setEditForm}
             issues={productIssues(editForm, items, editing.id, editing.costPrice)}
-            brands={brands}
             units={units}
             categories={categories}
+            warehouses={warehouses}
             fields={fields}
             fieldValues={editFieldValues}
             setFieldValues={setEditFieldValues}

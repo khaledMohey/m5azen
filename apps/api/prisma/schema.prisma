@@ -126,10 +126,13 @@ model Warehouse {
   purchaseReturns  PurchaseReturn[]
   transfersFrom    StockTransfer[] @relation("TransferFrom")
   transfersTo      StockTransfer[] @relation("TransferTo")
-  locations        WarehouseLocation[]
-  productLocations ProductLocation[]
-  userLinks        UserWarehouse[]
-  documents        TradeDocument[]
+  locations         WarehouseLocation[]
+  productLocations  ProductLocation[]
+  productWarehouses ProductWarehouse[]
+  customerWarehouses CustomerWarehouse[]
+  supplierWarehouses SupplierWarehouse[]
+  userLinks         UserWarehouse[]
+  documents         TradeDocument[]
 }
 
 /// حقول اختيارية عامة على الأصناف (ماركة، لون…) — الصنف اللي مش محتاجها يسيبها فاضية
@@ -170,6 +173,7 @@ model Product {
   fieldValues         ProductFieldValue[]
   customerPrices      CustomerPrice[]
   locations           ProductLocation[]
+  warehouses          ProductWarehouse[]
   documentLines       TradeDocumentLine[]
   stockBalances       StockBalance[]
   stockMovements      StockMovement[]
@@ -178,6 +182,19 @@ model Product {
   salesReturnLines    SalesReturnLine[]
   purchaseReturnLines PurchaseReturnLine[]
   transferLines       StockTransferLine[]
+}
+
+/// أصناف مربوطة بمخزن معيّن. لو الصنف مفيهوش صفوف هنا يبقى متاح لكل المخازن.
+model ProductWarehouse {
+  id          String @id @default(cuid())
+  productId   String
+  warehouseId String
+
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, warehouseId])
+  @@index([warehouseId])
 }
 
 model ProductFieldValue {
@@ -260,6 +277,7 @@ model Supplier {
   payments         Payment[]
   checks           BankCheck[]
   documents        TradeDocument[] @relation("DocSupplier")
+  warehouses       SupplierWarehouse[]
 }
 
 model Customer {
@@ -283,6 +301,33 @@ model Customer {
   salesInvoices SalesInvoice[]
   salesReturns  SalesReturn[]
   receipts      Receipt[]
+  warehouses    CustomerWarehouse[]
+}
+
+/// عملاء مربوطين بمخزن. من غير صفوف = ظاهر لكل المخازن.
+model CustomerWarehouse {
+  id          String @id @default(cuid())
+  customerId  String
+  warehouseId String
+
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, warehouseId])
+  @@index([warehouseId])
+}
+
+/// موردين مربوطين بمخزن. من غير صفوف = ظاهر لكل المخازن.
+model SupplierWarehouse {
+  id          String @id @default(cuid())
+  supplierId  String
+  warehouseId String
+
+  supplier  Supplier  @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@unique([supplierId, warehouseId])
+  @@index([warehouseId])
 }
 
 model CashAccount {

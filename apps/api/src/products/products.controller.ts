@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import {
@@ -8,6 +8,8 @@ import { Type } from 'class-transformer';
 import { FieldType, Role } from '@prisma/client';
 import { ProductsService } from './products.service';
 import { Roles } from '../common/guards';
+import { userWarehouseIds } from '../common/warehouse-scope';
+import { PrismaService } from '../prisma/prisma.service';
 
 class FieldValueDto {
   @IsString() fieldId!: string;
@@ -47,6 +49,8 @@ class ProductDto {
   @IsOptional() @IsString() description?: string;
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => FieldValueDto)
   fieldValues?: FieldValueDto[];
+  @IsOptional() @IsArray() @IsString({ each: true })
+  warehouseIds?: string[];
 }
 
 class UpdateProductDto {
@@ -65,6 +69,8 @@ class UpdateProductDto {
   @IsOptional() @IsBoolean() isActive?: boolean;
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => FieldValueDto)
   fieldValues?: FieldValueDto[];
+  @IsOptional() @IsArray() @IsString({ each: true })
+  warehouseIds?: string[];
 }
 
 class ImportRowDto {
@@ -83,7 +89,10 @@ class ImportDto {
 
 @Controller('products')
 export class ProductsController {
-  constructor(private service: ProductsService) {}
+  constructor(
+    private service: ProductsService,
+    private prisma: PrismaService,
+  ) {}
 
   @Get('fields')
   listFields() {
@@ -131,8 +140,16 @@ export class ProductsController {
   }
 
   @Get()
-  findAll(@Query('search') search?: string, @Query('page') page?: string, @Query('pageSize') pageSize?: string, @Query('filter') filter?: string) {
-    return this.service.findAll({ search, page, pageSize, filter });
+  async findAll(
+    @Req() req: { user: { userId: string; role: string } },
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('filter') filter?: string,
+    @Query('warehouseId') warehouseId?: string,
+  ) {
+    const warehouseIds = await userWarehouseIds(this.prisma, req.user);
+    return this.service.findAll({ search, page, pageSize, filter, warehouseId, warehouseIds });
   }
 
   @Get(':id/image')

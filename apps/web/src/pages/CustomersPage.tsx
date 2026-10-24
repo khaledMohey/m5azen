@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CircleDollarSign, FileText, Hash, MapPin, Pencil, Phone, Plus, Printer, Users, Wallet } from 'lucide-react';
+import { CircleDollarSign, FileText, Hash, MapPin, Pencil, Phone, Plus, Printer, Users, Wallet, Warehouse } from 'lucide-react';
 import { loadExcel } from '../lib/excel';
 import { api, formatDate, formatMoney, initialQuery } from '../lib/api';
 import { urgentInvoiceDate } from '../lib/due';
@@ -9,6 +9,7 @@ import { useColumns } from '../lib/columns';
 import { FilterOption, IconAction, ListBar } from '../components/ListBar';
 import { NotesPanel } from '../components/NotesPanel';
 import { EntityWorkspace } from '../components/EntityWorkspace';
+import { WarehouseMultiSelect } from '../components/WarehouseMultiSelect';
 import {
   Badge, Button, Card, Empty, Field, Input, Modal, PageHeader, Pager, PrintHeader, Select, StatCard, StatGrid, Table, Td, Th,
 } from '../components/ui';
@@ -22,6 +23,7 @@ type Customer = {
   balance: number;
   priceList?: string;
   isActive?: boolean;
+  warehouses?: { warehouseId: string; warehouse?: { id: string; name: string } }[];
 };
 
 type CustomerForm = {
@@ -31,9 +33,10 @@ type CustomerForm = {
   address: string;
   priceList: string;
   isActive: boolean;
+  warehouseIds: string[];
 };
 
-const emptyCustomer: CustomerForm = { code: '', name: '', phone: '', address: '', priceList: 'RETAIL', isActive: true };
+const emptyCustomer: CustomerForm = { code: '', name: '', phone: '', address: '', priceList: 'RETAIL', isActive: true, warehouseIds: [] };
 const CUSTOMER_VIEW = 'm5azen.customersView';
 
 type StatementRow = {
@@ -56,6 +59,7 @@ export function CustomersPage() {
   const [stmtOpen, setStmtOpen] = useState(false);
   const [statement, setStatement] = useState<{ customer: Customer; statement: StatementRow[]; balance: number } | null>(null);
   const [form, setForm] = useState<CustomerForm>(emptyCustomer);
+  const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [views, setViews] = useState<{ id: string; name: string; query: string }[]>([]);
   const [dueDates, setDueDates] = useState<Record<string, string>>({});
@@ -90,7 +94,10 @@ export function CustomersPage() {
     return <span className="font-extrabold">{formatMoney(row.balance)}</span>;
   }
 
-  useEffect(() => { api<{ id: string; name: string; query: string }[]>('/work/views?module=customers').then(setViews).catch(() => setViews([])); }, []);
+  useEffect(() => {
+    api<{ id: string; name: string; query: string }[]>('/work/views?module=customers').then(setViews).catch(() => setViews([]));
+    api<{ id: string; name: string }[]>('/warehouses').then(setWarehouses).catch(() => setWarehouses([]));
+  }, []);
   useEffect(() => { setListPage(1); }, [search, listView, pageSize]);
   useEffect(() => {
     const timer = window.setTimeout(() => { load().catch(() => undefined); }, 200);
@@ -135,6 +142,7 @@ export function CustomersPage() {
       address: row.address || '',
       priceList: row.priceList || 'RETAIL',
       isActive: row.isActive !== false,
+      warehouseIds: (row.warehouses || []).map((row) => row.warehouseId),
     });
     setOpen(true);
   }
@@ -149,6 +157,7 @@ export function CustomersPage() {
         phone: form.phone.trim(),
         address: form.address.trim(),
         priceList: form.priceList,
+        warehouseIds: form.warehouseIds,
         ...(editingId ? { isActive: form.isActive } : {}),
       };
       await api(editingId ? `/customers/${editingId}` : '/customers', {
@@ -363,6 +372,13 @@ export function CustomersPage() {
               <option value="RETAIL">قطاعي</option>
               <option value="WHOLESALE">جملة</option>
             </Select>
+          </Field>
+          <Field label="المخازن" icon={<Warehouse size={16} />} hint="العميل يظهر ليوزر المخازن دي فقط">
+            <WarehouseMultiSelect
+              warehouses={warehouses}
+              value={form.warehouseIds}
+              onChange={(warehouseIds) => setForm({ ...form, warehouseIds })}
+            />
           </Field>
           {editingId && (
             <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">

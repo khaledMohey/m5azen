@@ -5,6 +5,7 @@ import { api, formatDate, formatMoney, initialQuery, productImageUrl } from '../
 import { DueAmount } from '../components/DueAmount';
 import { AddLineButton, EditorErrors, EditorSection, InvoiceEditor, LineCard, PriceHint, SummaryRow } from '../components/InvoiceEditor';
 import { ProductPicker } from '../components/ProductPicker';
+import { productsForWarehouse } from '../lib/productWarehouse';
 import { TenderEditor, type PayMethodOption, type TenderPart } from '../components/TenderEditor';
 import { useConfirm, usePrompt, useToast } from '../lib/feedback';
 import { useColumns } from '../lib/columns';
@@ -14,7 +15,16 @@ import {
 } from '../components/ui';
 
 type Party = { id: string; name: string; code?: string; priceList?: string };
-type Product = { id: string; name: string; sku: string; salePrice: number; wholesalePrice?: number; barcode?: string | null; imageFile?: string | null };
+type Product = {
+  id: string;
+  name: string;
+  sku: string;
+  salePrice: number;
+  wholesalePrice?: number;
+  barcode?: string | null;
+  imageFile?: string | null;
+  warehouses?: { warehouseId: string }[];
+};
 type StockRow = { productId: string; quantity: number; product: Product };
 const WALK_IN_NAME = 'عميل سريع';
 type Account = { id: string; name: string };
@@ -246,14 +256,7 @@ export function SalesPage() {
   }
 
   function productsForSale(warehouseId: string, selectedIds: string[] = []) {
-    if (!warehouseId) return [];
-    const stock = stockOf(warehouseId);
-    const ids = new Set(stock.products.map((p) => p.id));
-    const extra = selectedIds
-      .filter((id) => id && !ids.has(id))
-      .map((id) => products.find((p) => p.id === id))
-      .filter((p): p is Product => !!p);
-    return [...stock.products, ...extra];
+    return productsForWarehouse(products, warehouseId, selectedIds);
   }
 
   async function resolveCustomer(name: string) {
@@ -568,7 +571,7 @@ export function SalesPage() {
     try {
     const customerId = await resolveCustomer(posForm.customerName);
     if (!requestKey.current) requestKey.current = crypto.randomUUID();
-    await api('/sales', {
+    const created = await api<Invoice>('/sales', {
       method: 'POST',
       headers: { 'x-idempotency-key': requestKey.current },
       body: JSON.stringify({
@@ -591,6 +594,13 @@ export function SalesPage() {
     setPosOpen(false);
     load();
     loadStock(posForm.warehouseId);
+    const wantPrint = await confirm({
+      title: 'طباعة الفاتورة',
+      message: `فاتورة ${created.number} اتسجلت. تطبعها دلوقتي؟`,
+      confirmLabel: 'طباعة',
+      cancelLabel: 'لا',
+    });
+    if (wantPrint) printInvoice(created);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'تعذر إتمام البيع');
     }
