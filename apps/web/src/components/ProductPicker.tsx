@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type InputHTMLAttributes } from 'react';
 import { Input } from './ui';
 
 export type PickerProduct = {
@@ -19,14 +19,20 @@ export function ProductPicker({
   disabled,
   placeholder = 'اكتب اسم الصنف',
   invalid,
+  lineIndex,
   onChange,
+  onEnter,
 }: {
   products: PickerProduct[];
   value: string;
   disabled?: boolean;
   placeholder?: string;
   invalid?: boolean;
+  /** لتركيز بند معيّن بعد Enter */
+  lineIndex?: number;
   onChange: (productId: string) => void;
+  /** بعد اختيار صنف بـ Enter (أو Enter والصنف متحدد) */
+  onEnter?: (productId: string) => void;
 }) {
   const selected = products.find((product) => product.id === value);
   const [text, setText] = useState(selected?.name || '');
@@ -88,16 +94,32 @@ export function ProductPicker({
     return products.find((product) => normalize(product.name) === query || normalize(product.sku) === query || normalize(product.barcode || '') === query);
   }
 
-  function commit() {
+  function commitFromEnter() {
+    if (value && selected && normalize(text) === normalize(selected.name)) {
+      if (open && matches[active] && matches[active].id !== value) {
+        choose(matches[active]);
+        onEnter?.(matches[active].id);
+        return;
+      }
+      setOpen(false);
+      onEnter?.(value);
+      return;
+    }
     const exact = exactMatch();
     const picked = exact || matches[active] || (matches.length === 1 ? matches[0] : undefined);
     if (!picked) return;
     choose(picked);
+    onEnter?.(picked.id);
   }
+
+  const extraInput: InputHTMLAttributes<HTMLInputElement> = lineIndex == null
+    ? {}
+    : { 'data-product-line': String(lineIndex) } as InputHTMLAttributes<HTMLInputElement>;
 
   return (
     <div className="relative" ref={wrapRef}>
       <Input
+        {...extraInput}
         value={text}
         disabled={disabled}
         placeholder={placeholder}
@@ -139,7 +161,7 @@ export function ProductPicker({
             setActive((index) => Math.max(index - 1, 0));
           } else if (event.key === 'Enter') {
             event.preventDefault();
-            commit();
+            commitFromEnter();
           } else if (event.key === 'Escape') {
             setOpen(false);
           }

@@ -308,6 +308,26 @@ export function SalesPage() {
     }));
   }
 
+  function addLineAfterProduct(i: number, productId: string) {
+    setLines((prev) => {
+      const next = prev.map((l, idx) => {
+        if (idx !== i) return l;
+        const prod = products.find((p) => p.id === productId);
+        return {
+          ...l,
+          productId,
+          unitPrice: prod ? priceFor(prod) : l.unitPrice,
+          quantity: l.quantity === '' ? 1 : l.quantity,
+        };
+      });
+      const hasEmptyAfter = next.slice(i + 1).some((l) => !l.productId);
+      return hasEmptyAfter ? next : [...next, emptyLine()];
+    });
+    window.setTimeout(() => {
+      document.querySelector<HTMLInputElement>(`input[data-product-line="${i + 1}"]`)?.focus();
+    }, 30);
+  }
+
   const linesTotal = lines.reduce((s, l) => s + num(l.quantity) * num(l.unitPrice) - num(l.discount), 0);
   const taxAmount = Math.round((linesTotal - num(form.discount)) * num(form.tax) * 100) / 10000;
   const grand = linesTotal - num(form.discount) + taxAmount;
@@ -913,9 +933,11 @@ export function SalesPage() {
                         hint: `متاح ${availableQty(product.id, form.warehouseId)}`,
                       }))}
                       value={l.productId}
+                      lineIndex={i}
                       disabled={!form.warehouseId}
                       placeholder={form.warehouseId ? 'اكتب اسم الصنف' : 'اختر المخزن أولاً'}
                       onChange={(productId) => updateLine(i, { productId })}
+                      onEnter={(productId) => addLineAfterProduct(i, productId)}
                     />
                   </div>
                   <div className="sm:col-span-3">
