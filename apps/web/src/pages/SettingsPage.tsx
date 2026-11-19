@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Building2, DatabaseBackup, Download, FileArchive, Lock, Monitor, Save, Server, ShieldCheck, UserPlus, Users, Warehouse } from 'lucide-react';
-import { api, getApiBase, setApiBase, setSettingsToken } from '../lib/api';
+import { api, getApiBase, getSettingsToken, setApiBase, setSettingsToken } from '../lib/api';
+import { companyLogoUrl, loadCompanyProfile } from '../lib/company';
 import { ROLE_LABELS } from '../lib/nav';
 import { useAuth } from '../lib/auth';
 import { useConfirm, useToast } from '../lib/feedback';
@@ -33,6 +34,9 @@ export function SettingsPage() {
   const [taxNumber, setTaxNumber] = useState('');
   const [commercialRegister, setCommercialRegister] = useState('');
   const [companyAddress, setCompanyAddress] = useState('');
+  const [companyPhone, setCompanyPhone] = useState('');
+  const [hasLogo, setHasLogo] = useState(false);
+  const [logoVersion, setLogoVersion] = useState('');
   const [apiUrl, setApiUrl] = useState(getApiBase());
   const [users, setUsers] = useState<SettingsUser[]>([]);
   const [accessUser, setAccessUser] = useState<string | null>(null);
@@ -60,6 +64,9 @@ export function SettingsPage() {
       setTaxNumber(s.taxNumber || '');
       setCommercialRegister(s.commercialRegister || '');
       setCompanyAddress(s.companyAddress || '');
+      setCompanyPhone(s.companyPhone || '');
+      setHasLogo(s.hasLogo === '1');
+      setLogoVersion(s.logoVersion || '');
     }).catch(() => undefined);
     if (isAdmin) {
       api<SettingsUser[]>('/users').then(setUsers).catch(() => setUsers([]));
@@ -195,14 +202,43 @@ export function SettingsPage() {
     try {
       await api('/settings', {
         method: 'POST',
-        body: JSON.stringify({ data: { companyName, apiUrl, taxNumber, commercialRegister, companyAddress } }),
+        body: JSON.stringify({
+          data: { companyName, apiUrl, taxNumber, commercialRegister, companyAddress, companyPhone },
+        }),
       });
+      await loadCompanyProfile(true);
       toast.success('تم حفظ الإعدادات');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'تعذر حفظ الإعدادات');
     } finally {
       setBusy('');
     }
+  }
+
+  async function uploadLogo(file: File) {
+    const body = new FormData();
+    body.append('file', file);
+    const headers: Record<string, string> = {};
+    const token = localStorage.getItem('m5azen_token');
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const gate = getSettingsToken();
+    if (gate) headers['x-settings-token'] = gate;
+    const response = await fetch(`${getApiBase()}/api/settings/logo`, { method: 'POST', headers, body });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.message || 'تعذر رفع اللوجو');
+    }
+    const profile = await response.json();
+    setHasLogo(!!profile.hasLogo);
+    setLogoVersion(profile.logoVersion || '');
+    await loadCompanyProfile(true);
+  }
+
+  async function removeLogo() {
+    await api('/settings/logo', { method: 'DELETE' });
+    setHasLogo(false);
+    setLogoVersion('');
+    await loadCompanyProfile(true);
   }
 
   async function backup() {
@@ -350,6 +386,62 @@ export function SettingsPage() {
               <Label>عنوان الفاتورة</Label>
               <Input value={companyAddress} readOnly={!isAdmin} onChange={(e) => setCompanyAddress(e.target.value)} />
             </div>
+            <div>
+              <Label>هاتف الشركة</Label>
+              <Input value={companyPhone} readOnly={!isAdmin} onChange={(e) => setCompanyPhone(e.target.value)} dir="ltr" />
+            </div>
+            {isAdmin && (
+              <div className="rounded-xl border border-dashed border-slate-200 p-3">
+                <div className="mb-2 text-[13px] font-bold text-slate-700">لوجو الشركة على الفاتورة</div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-xl border border-slate-200 bg-white p-1">
+                    <img
+                      src={hasLogo ? companyLogoUrl(logoVersion) : '/ak-tech-logo.png'}
+                      alt="Logo"
+                      className="h-full w-full object-contain"
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <label className="inline-flex cursor-pointer items-center rounded-xl bg-brand-700 px-3 py-2 text-xs font-bold text-white hover:bg-brand-800">
+                      رفع لوجو
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        className="hidden"
+                        onChange={async (event) => {
+                          const file = event.target.files?.[0];
+                          event.target.value = '';
+                          if (!file) return;
+                          try {
+                            await uploadLogo(file);
+                            toast.success('تم رفع اللوجو');
+                          } catch (e) {
+                            toast.error(e instanceof Error ? e.message : 'تعذر رفع اللوجو');
+                          }
+                        }}
+                      />
+                    </label>
+                    {hasLogo && (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={async () => {
+                          try {
+                            await removeLogo();
+                            toast.success('تم حذف اللوجو');
+                          } catch (e) {
+                            toast.error(e instanceof Error ? e.message : 'تعذر حذف اللوجو');
+                          }
+                        }}
+                      >
+                        حذف اللوجو
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                <p className="mt-2 text-xs text-muted">png أو jpg أو webp — يظهر في رأس فواتير البيع والشراء</p>
+              </div>
+            )}
             <div className="rounded-xl border border-dashed border-slate-200 p-3">
               <div className="mb-2 flex items-center gap-2 text-[13px] font-bold text-slate-700"><Server size={15} className="text-brand-600" /> عنوان الـ API المحلي</div>
               <Input

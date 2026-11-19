@@ -301,4 +301,55 @@ export class FinanceService {
       });
     });
   }
+
+  async listFixedAssets(activeOnly = true) {
+    const where = activeOnly ? { isActive: true } : {};
+    const items = await this.prisma.fixedAsset.findMany({
+      where,
+      orderBy: [{ acquiredAt: 'desc' }, { createdAt: 'desc' }],
+    });
+    const totalValue = Math.round(items.reduce((sum, row) => sum + row.value, 0) * 100) / 100;
+    return { items, count: items.length, totalValue, capital: totalValue };
+  }
+
+  async createFixedAsset(data: { name: string; value: number; acquiredAt?: string; notes?: string }) {
+    const name = data.name?.trim();
+    if (!name) throw new BadRequestException('اسم الأصل مطلوب');
+    if (!(data.value > 0)) throw new BadRequestException('قيمة الأصل لازم تكون أكبر من صفر');
+    return this.prisma.fixedAsset.create({
+      data: {
+        name,
+        value: Math.round(data.value * 100) / 100,
+        acquiredAt: data.acquiredAt ? new Date(data.acquiredAt) : new Date(),
+        notes: data.notes?.trim() || null,
+      },
+    });
+  }
+
+  async updateFixedAsset(
+    id: string,
+    data: { name?: string; value?: number; acquiredAt?: string; notes?: string | null; isActive?: boolean },
+  ) {
+    const current = await this.prisma.fixedAsset.findUnique({ where: { id } });
+    if (!current) throw new NotFoundException('الأصل غير موجود');
+    if (data.name !== undefined && !data.name.trim()) throw new BadRequestException('اسم الأصل مطلوب');
+    if (data.value !== undefined && !(data.value > 0)) throw new BadRequestException('قيمة الأصل لازم تكون أكبر من صفر');
+    return this.prisma.fixedAsset.update({
+      where: { id },
+      data: {
+        name: data.name?.trim(),
+        value: data.value === undefined ? undefined : Math.round(data.value * 100) / 100,
+        acquiredAt: data.acquiredAt ? new Date(data.acquiredAt) : undefined,
+        notes: data.notes === undefined ? undefined : (data.notes?.trim() || null),
+        isActive: data.isActive,
+      },
+    });
+  }
+
+  async removeFixedAsset(id: string) {
+    const current = await this.prisma.fixedAsset.findUnique({ where: { id } });
+    if (!current) throw new NotFoundException('الأصل غير موجود');
+    await this.prisma.fixedAsset.delete({ where: { id } });
+    return { ok: true };
+  }
 }

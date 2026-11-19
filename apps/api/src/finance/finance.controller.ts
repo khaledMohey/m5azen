@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
-import { IsEnum, IsNumber, IsOptional, IsString } from 'class-validator';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import { IsBoolean, IsEnum, IsNumber, IsOptional, IsString } from 'class-validator';
 import { CheckDirection, CheckStatus, Role } from '@prisma/client';
 import { Roles } from '../common/guards';
 import { FinanceService } from './finance.service';
@@ -36,6 +36,21 @@ class CheckDto {
   @IsOptional() @IsString() customerId?: string;
   @IsOptional() @IsString() supplierId?: string;
   @IsOptional() @IsString() notes?: string;
+}
+
+class FixedAssetDto {
+  @IsString() name!: string;
+  @IsNumber() value!: number;
+  @IsOptional() @IsString() acquiredAt?: string;
+  @IsOptional() @IsString() notes?: string;
+}
+
+class FixedAssetUpdateDto {
+  @IsOptional() @IsString() name?: string;
+  @IsOptional() @IsNumber() value?: number;
+  @IsOptional() @IsString() acquiredAt?: string;
+  @IsOptional() @IsString() notes?: string;
+  @IsOptional() @IsBoolean() isActive?: boolean;
 }
 
 @Controller('finance')
@@ -101,5 +116,28 @@ export class FinanceController {
   @Roles(Role.ADMIN, Role.ACCOUNTANT)
   setCheck(@Param('id') id: string, @Body() body: { status: CheckStatus; accountId?: string; methodId?: string }) {
     return this.service.setCheckStatus(id, body.status, body.methodId || body.accountId);
+  }
+
+  @Get('fixed-assets')
+  fixedAssets(@Query('all') all?: string) {
+    return this.service.listFixedAssets(all !== '1');
+  }
+
+  @Post('fixed-assets')
+  @Roles(Role.ADMIN, Role.ACCOUNTANT)
+  createFixedAsset(@Body() dto: FixedAssetDto) {
+    return this.service.createFixedAsset(dto);
+  }
+
+  @Patch('fixed-assets/:id')
+  @Roles(Role.ADMIN, Role.ACCOUNTANT)
+  updateFixedAsset(@Param('id') id: string, @Body() dto: FixedAssetUpdateDto) {
+    return this.service.updateFixedAsset(id, dto);
+  }
+
+  @Delete('fixed-assets/:id')
+  @Roles(Role.ADMIN, Role.ACCOUNTANT)
+  removeFixedAsset(@Param('id') id: string) {
+    return this.service.removeFixedAsset(id);
   }
 }

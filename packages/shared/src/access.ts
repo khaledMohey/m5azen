@@ -10,6 +10,7 @@ export type PageId =
   | 'returns'
   | 'cash'
   | 'finance'
+  | 'hr'
   | 'reports'
   | 'reportBuilder'
   | 'analytics'
@@ -178,6 +179,23 @@ export const PAGES: PageDef[] = [
     fields: [{ id: 'amounts', label: 'المبالغ' }],
   },
   {
+    id: 'hr',
+    label: 'الموارد البشرية',
+    group: 'المالية',
+    actions: [
+      { id: 'create', label: 'إضافة' },
+      { id: 'edit', label: 'تعديل' },
+      { id: 'delete', label: 'حذف' },
+      { id: 'post', label: 'ترحيل مرتبات' },
+      { id: 'export', label: 'تصدير' },
+      { id: 'request', label: 'طلب إجازة/سلفة/إذن' },
+    ],
+    fields: [
+      { id: 'salary', label: 'المرتب' },
+      { id: 'amounts', label: 'المبالغ' },
+    ],
+  },
+  {
     id: 'reports',
     label: 'التقارير',
     group: 'المالية',
@@ -232,7 +250,7 @@ export const PAGES: PageDef[] = [
 
 const FIELD_KEYS: Record<string, string[]> = {
   cost: ['costPrice', 'unitCost', 'totalCost'],
-  profit: ['profit', 'netProfit', 'grossProfit', 'margin', 'cogs', 'monthProfit'],
+  profit: ['profit', 'unitProfit', 'netProfit', 'grossProfit', 'margin', 'cogs', 'monthProfit'],
   cash: ['cashBalance'],
   balances: ['balance'],
   balance: ['balance'],
@@ -240,6 +258,11 @@ const FIELD_KEYS: Record<string, string[]> = {
   sellPrice: ['salePrice', 'wholesalePrice'],
   qty: ['quantity'],
   amounts: ['amount'],
+  salary: [
+    'basicSalary', 'earned', 'net', 'bonuses', 'deductions', 'advances',
+    'latePenalty', 'dailyRate', 'totalBasic', 'totalNet', 'commissionDue',
+    'commissionPercent', 'permissionDeduct', 'absenceDeduct', 'salaryNet',
+  ],
 };
 
 export function emptyGrant(): PageGrant {
@@ -271,6 +294,7 @@ export function templateFor(role: string): AccessMap {
       ...all,
       audit: off,
       settings: off,
+      hr: grant(true, ['create', 'edit', 'delete', 'post', 'export', 'request'], ['salary', 'amounts']),
     };
   }
   if (role === 'SALES') {
@@ -287,6 +311,7 @@ export function templateFor(role: string): AccessMap {
       returns: grant(true, ['create'], []),
       cash: grant(true, ['receipt'], []),
       finance: off,
+      hr: grant(true, ['request'], []),
       reports: off,
       reportBuilder: off,
       analytics: off,
@@ -308,6 +333,7 @@ export function templateFor(role: string): AccessMap {
       returns: grant(true, ['create'], ['cost']),
       cash: off,
     finance: off,
+    hr: grant(true, ['request'], []),
     reports: off,
     reportBuilder: off,
     analytics: off,

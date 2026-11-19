@@ -1,17 +1,18 @@
 import { useEffect, useState } from 'react';
-import { CalendarClock, FileCheck2, Plus, Receipt, Scale, Tags } from 'lucide-react';
+import { Building2, CalendarClock, FileCheck2, Plus, Receipt, Scale, Tags, Trash2 } from 'lucide-react';
 import { api, formatDate, formatMoney } from '../lib/api';
 import { useConfirm, useToast } from '../lib/feedback';
 import { BarList } from '../components/charts';
 import {
-  Badge, Button, Card, CardHeader, Empty, ErrorState, Input, Label, NumberInput, PageHeader, PageSkeleton, Pager, Select, StatCard, StatGrid, Table, Td, Th,
+  Badge, Button, Card, CardHeader, Empty, ErrorState, Input, Label, NumberInput, PageHeader, PageSkeleton, Pager, Select, StatCard, StatGrid, Table, Td, Th, todayIso,
   type Tone,
 } from '../components/ui';
 
-type Tab = 'expenses' | 'checks';
+type Tab = 'expenses' | 'checks' | 'assets';
 
 type Expense = { id: string; amount: number; expenseDate: string; notes?: string | null; category: { name: string }; account: { name: string } };
 type Check = { id: string; direction: string; checkNumber: string; bankName: string; amount: number; dueDate: string; status: string; customer?: { name: string } | null; supplier?: { name: string } | null };
+type FixedAsset = { id: string; name: string; value: number; acquiredAt: string; notes?: string | null; isActive: boolean };
 const CHECK_STATUS: Record<string, { label: string; tone: Tone }> = {
   PENDING: { label: 'قيد الانتظار', tone: 'amber' },
   CLEARED: { label: 'تم التحصيل / الصرف', tone: 'emerald' },
@@ -43,6 +44,10 @@ export function FinancePage() {
   const [checkTotal, setCheckTotal] = useState(0);
   const [expenseSummary, setExpenseSummary] = useState<{ totalAmount: number; monthAmount: number; byCategory: { label: string; value: number }[] }>({ totalAmount: 0, monthAmount: 0, byCategory: [] });
   const [checkSummary, setCheckSummary] = useState({ total: 0, pendingIn: 0, pendingInCount: 0, pendingOut: 0, pendingOutCount: 0 });
+  const [assets, setAssets] = useState<FixedAsset[]>([]);
+  const [assetCapital, setAssetCapital] = useState(0);
+  const [assetForm, setAssetForm] = useState({ name: '', value: '' as number | '', acquiredAt: todayIso(), notes: '' });
+  const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
 
   async function load() {
     setLoadError('');
@@ -51,11 +56,12 @@ export function FinancePage() {
       const checkParams = new URLSearchParams(params);
       if (checkFilter === 'PENDING') checkParams.set('status', 'PENDING');
       if (checkFilter === 'IN' || checkFilter === 'OUT') checkParams.set('direction', checkFilter);
-      const [a, cats, ex, ch] = await Promise.all([
+      const [a, cats, ex, ch, fa] = await Promise.all([
         api<{ id: string; name: string; kind: 'IMMEDIATE' | 'CHECK' }[]>('/cash/methods'),
         api<{ id: string; name: string }[]>('/finance/expense-categories'),
         api<{ items: Expense[]; total: number; summary: typeof expenseSummary }>(`/finance/expenses?${params}`),
         api<{ items: Check[]; total: number; summary: typeof checkSummary }>(`/finance/checks?${checkParams}`),
+        api<{ items: FixedAsset[]; count: number; totalValue: number; capital: number }>('/finance/fixed-assets'),
       ]);
       setMethods(a);
       setCategories(cats);
@@ -65,6 +71,8 @@ export function FinancePage() {
       setCheckTotal(ch.total);
       setExpenseSummary(ex.summary);
       setCheckSummary(ch.summary);
+      setAssets(fa.items);
+      setAssetCapital(fa.capital);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : 'تعذر تحميل البيانات المالية');
     } finally {
@@ -100,19 +108,26 @@ export function FinancePage() {
   const tabs: { id: Tab; label: string; count: number }[] = [
     { id: 'expenses', label: 'المصروفات', count: expenseTotalCount },
     { id: 'checks', label: 'الشيكات', count: checkSummary.total },
+    { id: 'assets', label: 'الأصول الثابتة', count: assets.length },
   ];
 
-  if (!loaded) return <div><PageHeader title="المالية" subtitle="مصروفات مصنفة ودفتر شيكات" /><PageSkeleton /></div>;
+  function resetAssetForm() {
+    setEditingAssetId(null);
+    setAssetForm({ name: '', value: '', acquiredAt: todayIso(), notes: '' });
+  }
+
+  if (!loaded) return <div><PageHeader title="المالية" subtitle="مصروفات وشيكات وأصول ثابتة (رأس المال)" /><PageSkeleton /></div>;
 
   return (
     <div>
-      <PageHeader title="المالية" subtitle="مصروفات مصنفة ودفتر شيكات" />
+      <PageHeader title="المالية" subtitle="مصروفات وشيكات وأصول ثابتة (رأس المال)" />
       {loadError && <Card className="mb-4"><ErrorState text={loadError} onRetry={load} /></Card>}
 
       <StatGrid>
         <StatCard label="مصروفات الشهر" value={formatMoney(expenseMonth)} hint={`الإجمالي المسجل ${formatMoney(expenseTotal)}`} icon={Receipt} tone="amber" onClick={() => setTab('expenses')} active={tab === 'expenses'} />
         <StatCard label="شيكات واردة معلقة" value={formatMoney(pendingIn)} hint={`${checkSummary.pendingInCount} شيك`} icon={FileCheck2} tone="emerald" onClick={() => { setTab('checks'); setCheckFilter('IN'); }} />
         <StatCard label="شيكات صادرة معلقة" value={formatMoney(pendingOut)} hint={`${checkSummary.pendingOutCount} شيك`} icon={CalendarClock} tone="rose" onClick={() => { setTab('checks'); setCheckFilter('OUT'); }} />
+        <StatCard label="رأس مال الشركة" value={formatMoney(assetCapital)} hint={`${assets.length} أصل ثابت`} icon={Building2} tone="brand" onClick={() => setTab('assets')} active={tab === 'assets'} />
       </StatGrid>
 
       <div className="mb-4 flex w-fit max-w-full flex-wrap rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
@@ -299,6 +314,137 @@ export function FinancePage() {
               </Table>
             )}
             <Pager page={listPage} pages={Math.max(1, Math.ceil(checkTotal / pageSize))} total={checkTotal} from={checkTotal === 0 ? 0 : (listPage - 1) * pageSize + 1} to={Math.min(listPage * pageSize, checkTotal)} pageSize={pageSize} onPageSize={setPageSize} onPage={setListPage} />
+          </Card>
+        </div>
+      )}
+
+      {tab === 'assets' && (
+        <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
+          <Card>
+            <CardHeader
+              title={editingAssetId ? 'تعديل أصل ثابت' : 'إضافة أصل ثابت'}
+              subtitle="مجموع قيم الأصول = رأس مال الشركة"
+              icon={Plus}
+            />
+            <form
+              className="space-y-3"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!assetForm.name.trim()) return toast.error('اكتب اسم الأصل');
+                if (num(assetForm.value) <= 0) return toast.error('أدخل قيمة أكبر من صفر');
+                const payload = {
+                  name: assetForm.name.trim(),
+                  value: num(assetForm.value),
+                  acquiredAt: assetForm.acquiredAt || undefined,
+                  notes: assetForm.notes.trim() || undefined,
+                };
+                const ok = await run(
+                  () => editingAssetId
+                    ? api(`/finance/fixed-assets/${editingAssetId}`, { method: 'PATCH', body: JSON.stringify(payload) })
+                    : api('/finance/fixed-assets', { method: 'POST', body: JSON.stringify(payload) }),
+                  editingAssetId ? 'تم تعديل الأصل' : 'تمت إضافة الأصل',
+                );
+                if (ok) resetAssetForm();
+              }}
+            >
+              <div>
+                <Label>اسم الأصل</Label>
+                <Input value={assetForm.name} onChange={(e) => setAssetForm({ ...assetForm, name: e.target.value })} placeholder="مثال: سيارة نقل / ماكينة / أثاث" />
+              </div>
+              <div>
+                <Label>القيمة</Label>
+                <NumberInput value={assetForm.value} onValueChange={(v) => setAssetForm({ ...assetForm, value: v })} />
+              </div>
+              <div>
+                <Label>تاريخ الاقتناء</Label>
+                <Input type="date" value={assetForm.acquiredAt} onChange={(e) => setAssetForm({ ...assetForm, acquiredAt: e.target.value })} />
+              </div>
+              <div>
+                <Label>ملاحظة</Label>
+                <Input value={assetForm.notes} onChange={(e) => setAssetForm({ ...assetForm, notes: e.target.value })} placeholder="اختياري" />
+              </div>
+              <div className="flex gap-2">
+                <Button type="submit" className="flex-1" disabled={busy}>{editingAssetId ? 'حفظ التعديل' : 'إضافة الأصل'}</Button>
+                {editingAssetId && (
+                  <Button type="button" variant="secondary" disabled={busy} onClick={resetAssetForm}>إلغاء</Button>
+                )}
+              </div>
+            </form>
+          </Card>
+          <Card>
+            <CardHeader
+              title="سجل الأصول الثابتة"
+              subtitle={`رأس المال ${formatMoney(assetCapital)}`}
+              icon={Building2}
+            />
+            {assets.length === 0 ? (
+              <Empty text="لا توجد أصول ثابتة" hint="أضف أول أصل من النموذج" />
+            ) : (
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>الأصل</Th>
+                    <Th>تاريخ الاقتناء</Th>
+                    <Th>ملاحظة</Th>
+                    <Th>القيمة</Th>
+                    <Th></Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {assets.map((row) => (
+                    <tr key={row.id}>
+                      <Td className="font-semibold text-slate-800">{row.name}</Td>
+                      <Td className="whitespace-nowrap text-slate-500">{formatDate(row.acquiredAt)}</Td>
+                      <Td className="max-w-xs truncate text-muted">{row.notes || '—'}</Td>
+                      <Td className="whitespace-nowrap font-extrabold text-brand-800">{formatMoney(row.value)}</Td>
+                      <Td>
+                        <div className="flex gap-1">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy}
+                            onClick={() => {
+                              setEditingAssetId(row.id);
+                              setAssetForm({
+                                name: row.name,
+                                value: row.value,
+                                acquiredAt: row.acquiredAt.slice(0, 10),
+                                notes: row.notes || '',
+                              });
+                            }}
+                          >
+                            تعديل
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy}
+                            onClick={async () => {
+                              if (!(await confirm({
+                                title: 'حذف أصل ثابت',
+                                message: `حذف «${row.name}» من سجل رأس المال؟`,
+                                confirmLabel: 'حذف',
+                                danger: true,
+                              }))) return;
+                              await run(() => api(`/finance/fixed-assets/${row.id}`, { method: 'DELETE' }), 'تم حذف الأصل');
+                              if (editingAssetId === row.id) resetAssetForm();
+                            }}
+                          >
+                            <Trash2 size={14} />
+                          </Button>
+                        </div>
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </Table>
+            )}
+            {assets.length > 0 && (
+              <div className="mt-4 flex items-center justify-between rounded-2xl bg-brand-50 px-4 py-3 text-sm">
+                <span className="font-bold text-brand-800">إجمالي رأس مال الشركة</span>
+                <span className="text-lg font-extrabold text-brand-900">{formatMoney(assetCapital)}</span>
+              </div>
+            )}
           </Card>
         </div>
       )}

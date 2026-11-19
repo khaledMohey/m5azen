@@ -33,6 +33,35 @@ function scrapFields(data: ScrapInput) {
   return { hasScrap, scrapKg, scrapPieces, scrapPriceKg, scrapAmount, scrapKind };
 }
 
+type SaleLineCost = {
+  quantity: number;
+  unitPrice: number;
+  unitCost?: number | null;
+  total: number;
+  product?: { costPrice?: number | null } | null;
+};
+
+function lineUnitCost(line: SaleLineCost) {
+  return line.unitCost || line.product?.costPrice || 0;
+}
+
+function lineProfitOf(line: SaleLineCost) {
+  const cost = Math.round(line.quantity * lineUnitCost(line) * 100) / 100;
+  return Math.round((line.total - cost) * 100) / 100;
+}
+
+function withSalesProfit<T extends { total: number; lines: SaleLineCost[] }>(invoice: T) {
+  const lines = invoice.lines.map((line) => {
+    const unitCost = lineUnitCost(line);
+    const profit = lineProfitOf(line);
+    const unitProfit = Math.round((line.unitPrice - unitCost) * 100) / 100;
+    return { ...line, unitCost, profit, unitProfit };
+  });
+  const cogs = Math.round(lines.reduce((sum, line) => sum + line.quantity * (line.unitCost || 0), 0) * 100) / 100;
+  const profit = Math.round((invoice.total - cogs) * 100) / 100;
+  return { ...invoice, lines, cogs, profit };
+}
+
 @Injectable()
 export class SalesService {
   constructor(
@@ -64,7 +93,8 @@ export class SalesService {
       receipts: { orderBy: { receivedAt: 'asc' as const } },
     };
     if (!page) {
-      return this.prisma.salesInvoice.findMany({ where, include, orderBy: { createdAt: 'desc' } });
+      const rows = await this.prisma.salesInvoice.findMany({ where, include, orderBy: { createdAt: 'desc' } });
+      return rows.map((row) => withSalesProfit(row));
     }
     const [total, items, all] = await Promise.all([
       this.prisma.salesInvoice.count({ where }),
@@ -83,7 +113,7 @@ export class SalesService {
       const tone = dueTone(row.invoiceDate, row.total - row.paidAmount);
       if (tone === 'red' || tone === 'yellow' || tone === 'green') summary[tone] += 1;
     }
-    return pageResult(items, total, page, { summary });
+    return pageResult(items.map((row) => withSalesProfit(row)), total, page, { summary });
   }
 
   dues(warehouseIds?: string[] | null) {
@@ -108,7 +138,7 @@ export class SalesService {
       },
     });
     if (!inv) throw new NotFoundException('فاتورة البيع غير موجودة');
-    return inv;
+    return withSalesProfit(inv);
   }
 
   async create(data: {

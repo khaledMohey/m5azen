@@ -1,4 +1,7 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException, Body, Controller, Delete, Get, Param, Post, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { IsNumber, IsObject, IsString, MinLength } from 'class-validator';
 import { Role } from '@prisma/client';
@@ -83,6 +86,35 @@ export class SettingsController {
   @UseGuards(SettingsGateGuard)
   reopenPeriod(@Body() dto: ReopenPeriodDto, @Req() req: { user: { userId: string } }) {
     return this.service.reopenPeriod(dto.year, dto.month, dto.reason, req.user.userId);
+  }
+
+  @Get('company-profile')
+  companyProfile() {
+    return this.service.companyProfile();
+  }
+
+  @Get('logo')
+  async logo(@Res() res: Response) {
+    const image = await this.service.logo();
+    res.setHeader('Content-Type', image.mimeType);
+    res.setHeader('Cache-Control', 'no-cache');
+    return res.send(image.data);
+  }
+
+  @Post('logo')
+  @Roles(Role.ADMIN)
+  @UseGuards(SettingsGateGuard)
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 2 * 1024 * 1024 } }))
+  uploadLogo(@UploadedFile() file?: { buffer?: Buffer; mimetype?: string }) {
+    if (!file?.buffer?.length || !file.mimetype) throw new BadRequestException('اختر صورة اللوجو');
+    return this.service.saveLogo({ buffer: file.buffer, mimetype: file.mimetype });
+  }
+
+  @Delete('logo')
+  @Roles(Role.ADMIN)
+  @UseGuards(SettingsGateGuard)
+  removeLogo() {
+    return this.service.removeLogo();
   }
 
   @Get()

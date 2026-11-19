@@ -8,6 +8,10 @@ export function setSettingsToken(token: string) {
   settingsToken = token;
 }
 
+export function getSettingsToken() {
+  return settingsToken;
+}
+
 export function setEditToken(token: string) {
   editToken = token;
 }

@@ -23,6 +23,7 @@ import { FinanceModule } from './finance/finance.module';
 import { OpsModule } from './ops/ops.module';
 import { OrgModule } from './org/org.module';
 import { WorkModule } from './work/work.module';
+import { HrModule } from './hr/hr.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -49,6 +50,7 @@ import { HealthController } from './health.controller';
     OpsModule,
     OrgModule,
     WorkModule,
+    HrModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: EditPasswordGuard }],

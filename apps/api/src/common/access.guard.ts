@@ -20,6 +20,7 @@ const RULES = [
   { prefix: '/api/suppliers', page: 'suppliers' },
   { prefix: '/api/cash', page: 'cash' },
   { prefix: '/api/finance', page: 'finance' },
+  { prefix: '/api/hr', page: 'hr' },
   { prefix: '/api/returns', page: 'returns' },
   { prefix: '/api/reports', page: 'reports' },
   { prefix: '/api/dashboard', page: 'dashboard' },
@@ -33,6 +34,8 @@ const SKIP = [
   /^\/api\/users\/me(?:\/|$)/,
   /^\/api\/settings\/unlock$/,
   /^\/api\/settings\/edit-unlock$/,
+  /^\/api\/settings\/company-profile$/,
+  /^\/api\/settings\/logo$/,
 ];
 
 export function requestPath(req: { originalUrl?: string; url?: string }) {
@@ -60,6 +63,11 @@ export function actionFor(method: string, path: string, page: PageId) {
   if (page === 'settings' && path.startsWith('/api/users')) return 'users';
   if (page === 'settings' && path === '/api/settings') return 'company';
   if (page === 'stock' && /\/movements|\/batches|\/locations|\/product-locations/.test(path)) return 'adjust';
+  if (page === 'hr') {
+    if (/\/requests\/[^/]+\/(?:approve|reject)$/.test(path)) return 'edit';
+    if (/\/requests(?:\/[^/]+\/cancel)?$/.test(path) && verb === 'POST') return 'request';
+    if (/\/payroll\/runs\/[^/]+\/post$/.test(path)) return 'post';
+  }
   if (/\/image$/.test(path)) return 'edit';
   if (verb === 'PATCH' || verb === 'PUT') return 'edit';
   if (verb === 'DELETE') return 'delete';

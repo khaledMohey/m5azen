@@ -1,4 +1,4 @@
-import { useEffect, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
+import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
 import { useLocation } from 'react-router-dom';
 import type { LucideIcon } from 'lucide-react';
 import { AlertOctagon, CalendarRange, ChevronLeft, ChevronRight, Inbox, RotateCcw, X } from 'lucide-react';
@@ -465,12 +465,26 @@ export function PrintHeader({
   title: string;
   subtitle?: string;
 }) {
+  const [company, setCompany] = useState({ name: 'نظام AK Tech لإدارة المخازن', logo: '/ak-tech-logo.png' });
+  useEffect(() => {
+    let alive = true;
+    import('../lib/company').then(({ companyLogoUrl, loadCompanyProfile }) => {
+      loadCompanyProfile().then((profile) => {
+        if (!alive) return;
+        setCompany({
+          name: profile.companyName,
+          logo: profile.hasLogo ? companyLogoUrl(profile.logoVersion) : '/ak-tech-logo.png',
+        });
+      });
+    });
+    return () => { alive = false; };
+  }, []);
   return (
     <div className="print-header mb-6 hidden border-b-2 border-brand-700 pb-4 print:flex print:items-center print:justify-between">
       <div className="flex items-center gap-3">
-        <img src="/ak-tech-logo.png" alt="AK Tech" className="h-16 w-16 object-contain" />
+        <img src={company.logo} alt={company.name} className="h-16 w-16 object-contain" />
         <div>
-          <div className="text-xl font-extrabold text-brand-800">نظام AK Tech لإدارة المخازن</div>
+          <div className="text-xl font-extrabold text-brand-800">{company.name}</div>
           <div className="text-sm text-brand-600">{title}</div>
           {subtitle && <div className="text-xs text-slate-500">{subtitle}</div>}
         </div>

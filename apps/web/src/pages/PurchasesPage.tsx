@@ -11,8 +11,9 @@ import { TenderEditor, type PayMethodOption, type TenderPart } from '../componen
 import { useConfirm, useToast } from '../lib/feedback';
 import { useColumns } from '../lib/columns';
 import { IconAction, ListBar } from '../components/ListBar';
+import { InvoicePrint } from '../components/InvoicePrint';
 import {
-  Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, Pager, PrintHeader, Select, StatusBadge, Table, Td, Th, todayIso,
+  Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, Pager, Select, StatusBadge, Table, Td, Th, todayIso,
 } from '../components/ui';
 
 type Party = { id: string; name: string };
@@ -654,74 +655,38 @@ export function PurchasesPage() {
 
       <Modal open={!!view} onClose={() => setView(null)} title={`فاتورة ${view?.number || ''}`} wide>
         {view && (
-          <div>
-            <PrintHeader title={`فاتورة شراء ${view.number}`} subtitle={view.supplier.name} />
-            <div className="mb-4 overflow-hidden rounded-2xl bg-brand-900 px-5 py-4 text-white no-print">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="text-xs text-brand-200">فاتورة شراء</div>
-                  <div className="text-2xl font-extrabold">{view.number}</div>
-                  <div className="mt-1 text-sm text-brand-100">{view.supplier.name} · {view.warehouse.name} · {formatDate(view.invoiceDate)}</div>
-                </div>
-                <StatusBadge status={view.status} />
-              </div>
-              <div className="mt-4 grid gap-3 border-t border-white/10 pt-3 sm:grid-cols-3">
-                <div><div className="text-[11px] text-brand-200">الإجمالي</div><div className="text-lg font-extrabold">{formatMoney(view.total)}</div></div>
-                <div><div className="text-[11px] text-brand-200">المدفوع</div><div className="text-lg font-extrabold">{formatMoney(view.paidAmount)}</div></div>
-                <div><div className="text-[11px] text-brand-200">المتبقي</div><div className="mt-1 inline-flex rounded-xl bg-white px-2 py-1">{view.status === 'CANCELLED' ? <span className="font-bold text-emerald-700">{formatMoney(0)}</span> : <DueAmount date={view.invoiceDate} remaining={owed(view)} />}</div></div>
-              </div>
-            </div>
-            <div className="mb-4 flex justify-end gap-2 no-print">
-              <Button variant="secondary" onClick={() => window.print()}><Printer size={14} /> طباعة / PDF</Button>
-              <Button variant="secondary" onClick={() => editInvoice(view)}><Pencil size={14} /> تعديل</Button>
-              <Button variant="danger" onClick={() => removeInvoice(view.id)}><Trash2 size={14} /> حذف</Button>
-            </div>
-            <Table>
-              <thead>
-                <tr>
-                  <Th>الصنف</Th>
-                  <Th>كمية</Th>
-                  <Th>تكلفة</Th>
-                  <Th>تشغيلة</Th>
-                  <Th>صلاحية</Th>
-                  <Th>الإجمالي</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {view.lines.map((l, i) => (
-                  <tr key={i}>
-                    <Td>{l.product.name}</Td>
-                    <Td>{l.quantity}</Td>
-                    <Td>{formatMoney(l.unitCost)}</Td>
-                    <Td>{l.batchNumber || '—'}</Td>
-                    <Td>{l.expiryDate ? formatDate(l.expiryDate) : '—'}</Td>
-                    <Td>{formatMoney(l.total)}</Td>
-                  </tr>
-                ))}
-              </tbody>
-            </Table>
-            <div className="mt-4 space-y-1 text-sm">
-              {view.scrapSale && (
-                <div className="flex justify-between rounded-lg bg-amber-50 px-2 py-1 text-amber-900">
-                  <span>
-                    خردة مخصومة {view.scrapSale.number} · {view.scrapSale.netKg} كجم
-                    {view.scrapSale.withWater ? ` (قائم ${view.scrapSale.grossKg} − ${view.scrapSale.waterPercent}% مياه)` : ''}
-                    {' × '}{formatMoney(view.scrapSale.priceKg)}
-                  </span>
-                  <span>− {formatMoney(view.scrapSale.amount)}</span>
-                </div>
-              )}
-              <div className="flex justify-between"><span>المدفوع</span><span>{formatMoney(view.paidAmount)}</span></div>
-              <div className="flex justify-between font-bold">
-                <span>المتبقي</span>
-                {view.status === 'CANCELLED' ? <span>{formatMoney(0)}</span> : <DueAmount date={view.invoiceDate} remaining={view.total - view.paidAmount} />}
-              </div>
-              <div className="flex justify-between text-lg font-extrabold">
-                <span>الإجمالي</span>
-                <span>{formatMoney(view.total)}</span>
-              </div>
-            </div>
-          </div>
+          <InvoicePrint
+            kind="purchase"
+            number={view.number}
+            status={view.status}
+            date={view.invoiceDate}
+            partyLabel="المورد"
+            partyName={view.supplier.name}
+            warehouseName={view.warehouse.name}
+            lines={view.lines.map((l) => ({
+              name: l.product.name,
+              sku: l.product.sku,
+              quantity: l.quantity,
+              unitPrice: l.unitCost,
+              total: l.total,
+              meta: [l.batchNumber ? `تشغيلة ${l.batchNumber}` : '', l.expiryDate ? `صلاحية ${formatDate(l.expiryDate)}` : ''].filter(Boolean).join(' · ') || undefined,
+            }))}
+            subtotal={view.subtotal}
+            discount={view.discount}
+            tax={view.tax}
+            total={view.total}
+            paidAmount={view.paidAmount}
+            remaining={view.status === 'CANCELLED' ? 0 : Math.max(0, view.total - view.paidAmount)}
+            notes={view.scrapSale
+              ? `خردة مخصومة ${view.scrapSale.number} · ${view.scrapSale.netKg} كجم${view.scrapSale.withWater ? ` (قائم ${view.scrapSale.grossKg} − ${view.scrapSale.waterPercent}% مياه)` : ''} × ${formatMoney(view.scrapSale.priceKg)} = − ${formatMoney(view.scrapSale.amount)}`
+              : undefined}
+            actions={(
+              <>
+                <Button variant="secondary" onClick={() => editInvoice(view)}><Pencil size={14} /> تعديل</Button>
+                <Button variant="danger" onClick={() => removeInvoice(view.id)}><Trash2 size={14} /> حذف</Button>
+              </>
+            )}
+          />
         )}
       </Modal>
     </div>

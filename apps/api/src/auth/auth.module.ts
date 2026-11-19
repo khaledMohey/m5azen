@@ -9,6 +9,7 @@ import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { JwtAuthGuard, RolesGuard } from '../common/guards';
 import { AccessGuard } from '../common/access.guard';
 import { AccessInterceptor } from '../common/access.interceptor';
+import { PermissionsUpgradeService } from '../common/permissions-upgrade.service';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { AccessInterceptor } from '../common/access.interceptor';
   providers: [
     AuthService,
     JwtStrategy,
+    PermissionsUpgradeService,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: AccessGuard },
     { provide: APP_GUARD, useClass: RolesGuard },

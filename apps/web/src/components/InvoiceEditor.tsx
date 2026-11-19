@@ -86,6 +86,7 @@ export function AddLineButton({ onClick }: { onClick: () => void }) {
 export function LineCard({
   index,
   total,
+  profit,
   invalid,
   onRemove,
   canRemove,
@@ -93,6 +94,7 @@ export function LineCard({
 }: {
   index: number;
   total: number;
+  profit?: number | null;
   invalid?: boolean;
   onRemove: () => void;
   canRemove: boolean;
@@ -103,7 +105,14 @@ export function LineCard({
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="grid h-7 min-w-7 place-items-center rounded-lg bg-brand-700 px-2 text-xs font-extrabold text-white">{index + 1}</span>
         <div className="flex items-center gap-2">
-          <span className="text-sm font-extrabold text-slate-900">{formatMoney(total)}</span>
+          <div className="text-left">
+            <div className="text-sm font-extrabold text-slate-900">{formatMoney(total)}</div>
+            {profit != null && (
+              <div className={`text-[11px] font-bold ${profit >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
+                ربح الصنف {formatMoney(profit)}
+              </div>
+            )}
+          </div>
           <button type="button" aria-label="حذف البند" title="حذف البند" disabled={!canRemove} onClick={onRemove} className="grid h-8 w-8 place-items-center rounded-lg text-rose-600 hover:bg-rose-50 disabled:opacity-30">
             <Trash2 size={15} />
           </button>

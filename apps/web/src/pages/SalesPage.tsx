@@ -12,8 +12,9 @@ import { useConfirm, usePrompt, useToast } from '../lib/feedback';
 import { useAccess } from '../lib/auth';
 import { useColumns } from '../lib/columns';
 import { IconAction, ListBar } from '../components/ListBar';
+import { InvoicePrint } from '../components/InvoicePrint';
 import {
-  Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, Pager, PrintHeader, Select, StatusBadge, Table, Td, Th, todayIso,
+  Button, Card, Empty, Input, Label, Modal, NumberInput, PageHeader, Pager, Select, StatusBadge, Table, Td, Th, todayIso,
 } from '../components/ui';
 
 type Party = { id: string; name: string; code?: string; priceList?: string };
@@ -22,6 +23,7 @@ type Product = {
   name: string;
   sku: string;
   salePrice: number;
+  costPrice?: number;
   wholesalePrice?: number;
   barcode?: string | null;
   imageFile?: string | null;
@@ -31,6 +33,19 @@ type StockRow = { productId: string; quantity: number; product: Product };
 const WALK_IN_NAME = 'عميل سريع';
 type Account = { id: string; name: string };
 type Line = { id?: string; productId: string; quantity: number | ''; unitPrice: number | ''; discount: number | '' };
+
+type InvoiceLine = {
+  id: string;
+  productId: string;
+  quantity: number;
+  unitPrice: number;
+  unitCost?: number;
+  discount?: number;
+  total: number;
+  profit?: number;
+  unitProfit?: number;
+  product: { name: string; sku: string; costPrice?: number };
+};
 
 type Invoice = {
   id: string;
@@ -42,6 +57,8 @@ type Invoice = {
   discount: number;
   tax: number;
   subtotal: number;
+  profit?: number;
+  cogs?: number;
   notes?: string | null;
   taxRate?: number;
   hasScrap?: boolean;
@@ -52,7 +69,7 @@ type Invoice = {
   scrapKind?: string;
   customer: { id: string; name: string };
   warehouse: { id: string; name: string };
-  lines: { id: string; productId: string; quantity: number; unitPrice: number; unitCost?: number; discount?: number; total: number; product: { name: string; sku: string } }[];
+  lines: InvoiceLine[];
   receipts?: { id: string; number: string; amount: number; paymentMethod: string; receivedAt: string; note?: string | null }[];
 };
 
@@ -63,10 +80,25 @@ type CostPreview = {
   allocations: { quantity: number; unitCost?: number; reference: string | null; supplierName: string | null; fallback?: boolean }[];
 };
 
+function lineProfit(line: Pick<InvoiceLine, 'quantity' | 'unitPrice' | 'unitCost' | 'total' | 'profit' | 'product'>) {
+  if (typeof line.profit === 'number') return line.profit;
+  const unitCost = line.unitCost ?? line.product?.costPrice ?? 0;
+  return Math.round((line.total - line.quantity * unitCost) * 100) / 100;
+}
+
+function lineUnitProfit(line: Pick<InvoiceLine, 'unitPrice' | 'unitCost' | 'unitProfit' | 'product'>) {
+  if (typeof line.unitProfit === 'number') return line.unitProfit;
+  const unitCost = line.unitCost ?? line.product?.costPrice ?? 0;
+  return Math.round((line.unitPrice - unitCost) * 100) / 100;
+}
+
 /** ربح الفاتورة = (البنود − الخصم + قيمة الخردة المستلمة) − تكلفة البضاعة بالـ FIFO */
 function invoiceProfit(inv: Invoice) {
-  if (inv.lines.some((l) => l.unitCost === undefined)) return null;
-  const cost = inv.lines.reduce((s, l) => s + l.quantity * (l.unitCost || 0), 0);
+  if (typeof inv.profit === 'number' && inv.lines.every((l) => l.unitCost !== undefined || l.product?.costPrice !== undefined)) {
+    /* keep API profit when present; still prefer FIFO math below when unit costs exist */
+  }
+  if (inv.lines.some((l) => l.unitCost === undefined && l.product?.costPrice === undefined)) return null;
+  const cost = inv.lines.reduce((s, l) => s + l.quantity * (l.unitCost ?? l.product?.costPrice ?? 0), 0);
   const revenue = inv.subtotal - inv.discount + (inv.scrapAmount || 0);
   return { revenue, cost, profit: Math.round((revenue - cost) * 100) / 100 };
 }
@@ -128,6 +160,10 @@ export function SalesPage() {
   const confirm = useConfirm();
   const promptText = usePrompt();
   const toast = useToast();
+  const access = useAccess();
+  const canSeeCost = access.see('sales', 'cost');
+  const canSeeProfit = access.see('sales', 'profit');
+  const showProfit = canSeeProfit;
   const [items, setItems] = useState<Invoice[]>([]);
   const [listPage, setListPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -142,9 +178,6 @@ export function SalesPage() {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<Invoice | null>(null);
   const [scrapOpen, setScrapOpen] = useState(false);
-  const access = useAccess();
-  const canSeeCost = access.see('sales', 'cost');
-  const canSeeProfit = access.see('sales', 'profit');
   const [costPreview, setCostPreview] = useState<Record<number, CostPreview>>({});
   const [saleFifo, setSaleFifo] = useState<{
     lines: {
@@ -336,10 +369,10 @@ export function SalesPage() {
     { id: 'warehouse', label: 'المخزن' },
     { id: 'date', label: 'التاريخ' },
     { id: 'total', label: 'الإجمالي' },
+    ...(canSeeProfit ? [{ id: 'profit', label: 'الربح' }] : []),
     { id: 'paid', label: 'المدفوع' },
     { id: 'due', label: 'المتبقي' },
     { id: 'status', label: 'الحالة' },
-    ...(canSeeProfit ? [{ id: 'profit', label: 'الربح' }] : []),
   ]);
 
   useEffect(() => {
@@ -401,6 +434,7 @@ export function SalesPage() {
     return () => window.clearTimeout(timer);
   }, [open, canSeeCost, form.warehouseId, previewKey, editingId]);
 
+  const filledLines = lines.filter((l) => l.productId);
   const linesTotal = lines.reduce((s, l) => s + num(l.quantity) * num(l.unitPrice) - num(l.discount), 0);
   const taxAmount = Math.round((linesTotal - num(form.discount)) * num(form.tax) * 100) / 10000;
   const scrapAmount = form.hasScrap ? Math.max(0, num(form.scrapAmount)) : 0;
@@ -410,9 +444,11 @@ export function SalesPage() {
   const formCost = lines.reduce((s, l, i) => s + (l.productId ? costPreview[i]?.totalCost || 0 : 0), 0);
   const formRevenue = linesTotal - num(form.discount) + scrapAmount;
   const formProfit = Math.round((formRevenue - formCost) * 100) / 100;
+  const draftProfit = costKnown ? formProfit : (showProfit
+    ? Math.round((grand - filledLines.reduce((sum, l) => sum + num(l.quantity) * (products.find((p) => p.id === l.productId)?.costPrice || 0), 0)) * 100) / 100
+    : 0);
   const paidNow = form.payments.reduce((sum, part) => sum + num(part.amount), 0);
   const remaining = Math.max(0, grand - paidNow);
-  const filledLines = lines.filter((l) => l.productId);
   const badLine = (l: Line) => !!l.productId && !(num(l.quantity) > 0);
   const overStock = lines.some((l) => l.productId && num(l.quantity) > availableQty(l.productId, form.warehouseId) + 0.0001);
   const showScrapSection = !!form.warehouseId && form.customerName.trim().length >= 2;
@@ -432,6 +468,10 @@ export function SalesPage() {
   const posGross = posCart.reduce((s, l) => s + num(l.quantity) * num(l.unitPrice), 0);
   const posDiscount = num(posForm.discount);
   const posNet = Math.max(0, Math.round((posGross - posDiscount) * 100) / 100);
+  const posCogs = showProfit
+    ? posCart.reduce((sum, l) => sum + num(l.quantity) * (products.find((p) => p.id === l.productId)?.costPrice || 0), 0)
+    : 0;
+  const posProfit = showProfit ? Math.round((posNet - posCogs) * 100) / 100 : 0;
   const posEntered = posForm.payments.reduce((sum, part) => sum + num(part.amount), 0);
   const posPaid = posEntered > 0 ? posEntered : (posForm.payments[0]?.methodId ? posNet : 0);
   const posRemaining = Math.max(0, posNet - posPaid);
@@ -754,8 +794,12 @@ export function SalesPage() {
     const ExcelJS = await loadExcel();
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('المبيعات');
-    sheet.addRow(['الرقم', 'العميل', 'المخزن', 'التاريخ', 'الإجمالي', 'المدفوع', 'المتبقي', 'الحالة']);
-    rows.forEach((inv) => sheet.addRow([inv.number, inv.customer.name, inv.warehouse.name, formatDate(inv.invoiceDate), inv.total, inv.paidAmount, owed(inv), inv.status]));
+    sheet.addRow(showProfit
+      ? ['الرقم', 'العميل', 'المخزن', 'التاريخ', 'الإجمالي', 'الربح', 'المدفوع', 'المتبقي', 'الحالة']
+      : ['الرقم', 'العميل', 'المخزن', 'التاريخ', 'الإجمالي', 'المدفوع', 'المتبقي', 'الحالة']);
+    rows.forEach((inv) => sheet.addRow(showProfit
+      ? [inv.number, inv.customer.name, inv.warehouse.name, formatDate(inv.invoiceDate), inv.total, invoiceProfit(inv)?.profit ?? '', inv.paidAmount, owed(inv), inv.status]
+      : [inv.number, inv.customer.name, inv.warehouse.name, formatDate(inv.invoiceDate), inv.total, inv.paidAmount, owed(inv), inv.status]));
     const buffer = await workbook.xlsx.writeBuffer();
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([buffer]));
@@ -875,6 +919,15 @@ export function SalesPage() {
                     <div>
                       <div className="text-xs text-muted">الإجمالي</div>
                       <div className="font-extrabold">{formatMoney(inv.total)}</div>
+                      {canSeeProfit && (() => {
+                        const p = inv.status === 'DRAFT' || inv.status === 'CANCELLED' ? null : invoiceProfit(inv);
+                        if (!p) return null;
+                        return (
+                          <div className={`mt-1 text-xs font-bold ${p.profit >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
+                            ربح {formatMoney(p.profit)}
+                          </div>
+                        );
+                      })()}
                       <div className="mt-1"><DueAmount date={inv.invoiceDate} remaining={owed(inv)} /></div>
                     </div>
                     <div className="flex gap-1">
@@ -984,6 +1037,7 @@ export function SalesPage() {
               <SummaryRow label="خصم الفاتورة" value={formatMoney(num(form.discount))} />
               <SummaryRow label={`الضريبة (${num(form.tax)}%)`} value={formatMoney(taxAmount)} />
               <SummaryRow label="المطلوب من العميل" value={formatMoney(grand)} strong />
+              {showProfit && <SummaryRow label="ربح الفاتورة" value={formatMoney(draftProfit)} />}
               <SummaryRow label="المدفوع" value={formatMoney(paidNow)} />
               <div className="flex items-center justify-between rounded-xl bg-white px-3 py-2 font-bold text-slate-900">
                 <span>المتبقي</span>
@@ -1123,11 +1177,18 @@ export function SalesPage() {
 
         <EditorSection title={`بنود الفاتورة (${filledLines.length})`} action={<AddLineButton onClick={() => setLines((prev) => [...prev, emptyLine()])} />}>
           <div className="space-y-2">
-            {lines.map((l, i) => (
+            {lines.map((l, i) => {
+              const lineTotal = Math.max(0, num(l.quantity) * num(l.unitPrice) - num(l.discount));
+              const unitCost = products.find((p) => p.id === l.productId)?.costPrice || 0;
+              const lineProfitValue = showProfit && l.productId
+                ? Math.round((lineTotal - num(l.quantity) * unitCost) * 100) / 100
+                : null;
+              return (
               <LineCard
                 key={i}
                 index={i}
-                total={Math.max(0, num(l.quantity) * num(l.unitPrice) - num(l.discount))}
+                total={lineTotal}
+                profit={lineProfitValue}
                 invalid={triedSave && badLine(l)}
                 canRemove={lines.length > 1}
                 onRemove={() => setLines((prev) => prev.filter((_, idx) => idx !== i))}
@@ -1169,6 +1230,11 @@ export function SalesPage() {
                     <Label>خصم البند</Label>
                     <NumberInput value={l.discount} onValueChange={(v) => updateLine(i, { discount: v })} />
                   </div>
+                  {showProfit && l.productId && (
+                    <div className="sm:col-span-3">
+                      <PriceHint label="ربح الوحدة" value={Math.round((num(l.unitPrice) - unitCost) * 100) / 100} />
+                    </div>
+                  )}
                 </div>
                 {canSeeCost && l.productId && num(l.quantity) > 0 && costPreview[i]?.unitCost !== undefined && (() => {
                   const cp = costPreview[i];
@@ -1206,7 +1272,8 @@ export function SalesPage() {
                   );
                 })()}
               </LineCard>
-            ))}
+              );
+            })}
           </div>
         </EditorSection>
       </InvoiceEditor>
@@ -1270,6 +1337,10 @@ export function SalesPage() {
               <div className="space-y-2">
                 {posCart.map((l, i) => {
                   const prod = products.find((p) => p.id === l.productId);
+                  const lineTotal = num(l.quantity) * num(l.unitPrice);
+                  const lineProfitValue = showProfit
+                    ? Math.round((lineTotal - num(l.quantity) * (prod?.costPrice || 0)) * 100) / 100
+                    : null;
                   return (
                     <div key={l.productId} className="grid grid-cols-12 items-end gap-2 rounded-xl bg-slate-50 p-2">
                       <div className="col-span-5 flex items-center gap-2 text-sm font-semibold">
@@ -1281,6 +1352,11 @@ export function SalesPage() {
                             {' · '}
                             العميل {priceHints[l.productId]?.lastCustomer == null ? '—' : formatMoney(priceHints[l.productId]?.lastCustomer || 0)}
                           </span>
+                          {lineProfitValue != null && (
+                            <span className={`block text-[11px] font-bold ${lineProfitValue >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
+                              ربح الصنف {formatMoney(lineProfitValue)}
+                            </span>
+                          )}
                         </span>
                       </div>
                       <div className="col-span-3">
@@ -1311,6 +1387,12 @@ export function SalesPage() {
               <div className="flex justify-between text-brand-100"><span>المجموع</span><span className="text-white">{formatMoney(posGross)}</span></div>
               <div className="flex justify-between text-brand-100"><span>الخصم</span><span className="text-white">{formatMoney(posDiscount)}</span></div>
               <div className="flex justify-between"><span className="text-brand-100">الإجمالي</span><strong className="text-lg">{formatMoney(posNet)}</strong></div>
+              {showProfit && (
+                <div className="flex justify-between text-emerald-300">
+                  <span>ربح الفاتورة</span>
+                  <span className="font-bold text-white">{formatMoney(posProfit)}</span>
+                </div>
+              )}
               <div className="flex justify-between text-brand-100"><span>المدفوع</span><span className="text-white">{formatMoney(posPaid)}</span></div>
               <div className="flex justify-between border-t border-white/10 pt-2 font-bold"><span>المتبقي</span><span>{formatMoney(posRemaining)}</span></div>
             </div>
@@ -1322,151 +1404,129 @@ export function SalesPage() {
 
       <Modal open={!!view} onClose={() => setView(null)} title={`فاتورة ${view?.number || ''}`} wide>
         {view && (
-          <div>
-            <PrintHeader title={`فاتورة بيع ${view.number}`} subtitle={view.customer.name} />
-            <div className="mb-4 overflow-hidden rounded-2xl bg-brand-900 px-5 py-4 text-white no-print">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="text-xs text-brand-200">فاتورة بيع</div>
-                  <div className="text-2xl font-extrabold">{view.number}</div>
-                  <div className="mt-1 text-sm text-brand-100">{view.customer.name} · {view.warehouse.name} · {formatDate(view.invoiceDate)}</div>
-                </div>
-                <StatusBadge status={view.status} />
-              </div>
-              <div className="mt-4 grid gap-3 border-t border-white/10 pt-3 sm:grid-cols-3">
-                <div><div className="text-[11px] text-brand-200">الإجمالي</div><div className="text-lg font-extrabold">{formatMoney(view.total)}</div></div>
-                <div><div className="text-[11px] text-brand-200">المدفوع</div><div className="text-lg font-extrabold">{formatMoney(view.paidAmount)}</div></div>
-                <div><div className="text-[11px] text-brand-200">المتبقي</div><div className="mt-1 inline-flex rounded-xl bg-white px-2 py-1">{view.status === 'CANCELLED' ? <span className="font-bold text-emerald-700">{formatMoney(0)}</span> : <DueAmount date={view.invoiceDate} remaining={owed(view)} />}</div></div>
-              </div>
-            </div>
-            <div className="mb-4 flex justify-end gap-2 no-print">
-              <Button variant="secondary" onClick={() => window.print()}><Printer size={14} /> طباعة / PDF</Button>
-              <Button variant="secondary" onClick={() => editInvoice(view)}><Pencil size={14} /> تعديل</Button>
-              <Button variant="danger" onClick={() => removeInvoice(view.id)}><Trash2 size={14} /> حذف</Button>
-            </div>
-            <Table>
-              <thead>
-                <tr>
-                  <Th>الصنف</Th>
-                  <Th>كمية</Th>
-                  <Th>سعر</Th>
-                  <Th>الإجمالي</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {view.lines.map((l, i) => (
-                  <tr key={i}>
-                    <Td>{l.product.name}</Td>
-                    <Td>{l.quantity}</Td>
-                    <Td>{formatMoney(l.unitPrice)}</Td>
-                    <Td>{formatMoney(l.total)}</Td>
-                  </tr>
-                ))}
-                {view.hasScrap && (view.scrapAmount || 0) > 0 && (
-                  <tr>
-                    <Td>
-                      بطارية خردة مستلمة من العميل
-                      <div className="text-xs text-muted">
-                        {(view.scrapPieces || 0) > 0 ? `${view.scrapPieces} قطعة · ` : ''}
-                        {view.scrapKg || 0} كيلو × {formatMoney(view.scrapPriceKg || 0)}
-                      </div>
-                    </Td>
-                    <Td>{view.scrapKg || 0}</Td>
-                    <Td>{formatMoney(view.scrapPriceKg || 0)}</Td>
-                    <Td>{formatMoney(view.scrapAmount || 0)}</Td>
-                  </tr>
+          <InvoicePrint
+            kind="sale"
+            number={view.number}
+            status={view.status}
+            date={view.invoiceDate}
+            partyLabel="العميل"
+            partyName={view.customer.name}
+            warehouseName={view.warehouse.name}
+            lines={[
+              ...view.lines.map((l) => ({
+                name: l.product.name,
+                sku: l.product.sku,
+                quantity: l.quantity,
+                unitPrice: l.unitPrice,
+                total: l.total,
+                profit: showProfit ? lineProfit(l) : null,
+                unitProfit: showProfit ? lineUnitProfit(l) : null,
+              })),
+              ...(view.hasScrap && (view.scrapAmount || 0) > 0 ? [{
+                name: 'بطارية خردة مستلمة من العميل',
+                sku: [
+                  (view.scrapPieces || 0) > 0 ? `${view.scrapPieces} قطعة` : '',
+                  `${view.scrapKg || 0} كيلو`,
+                ].filter(Boolean).join(' · '),
+                quantity: view.scrapKg || 0,
+                unitPrice: view.scrapPriceKg || 0,
+                total: view.scrapAmount || 0,
+              }] : []),
+            ]}
+            subtotal={view.subtotal}
+            discount={view.discount}
+            tax={view.tax}
+            total={view.total}
+            paidAmount={view.paidAmount}
+            remaining={view.status === 'CANCELLED' ? 0 : Math.max(0, view.total - view.paidAmount)}
+            notes={view.notes}
+            showProfit={showProfit}
+            profit={showProfit ? (invoiceProfit(view)?.profit ?? null) : null}
+            actions={(
+              <>
+                <Button variant="secondary" onClick={() => editInvoice(view)}><Pencil size={14} /> تعديل</Button>
+                <Button variant="danger" onClick={() => removeInvoice(view.id)}><Trash2 size={14} /> حذف</Button>
+              </>
+            )}
+            footer={(
+              <div className="no-print space-y-4">
+                {saleFifo && saleFifo.lines.some((l) => l.allocations.length > 0) && (
+                  <div className="rounded-xl border border-slate-200 p-3">
+                    <div className="mb-2 text-sm font-bold text-slate-800">مسحوب من أنهي دفعة (FIFO)</div>
+                    <div className="space-y-2">
+                      {saleFifo.lines.map((line) => (
+                        <div key={line.lineId} className="rounded-lg bg-slate-50 p-2 text-sm">
+                          <div className="flex flex-wrap justify-between gap-2">
+                            <span className="font-bold">{line.name} · {line.quantity}</span>
+                            <span className="text-xs text-muted">
+                              تكلفة الوحدة {formatMoney(line.unitCost)} · ربح البند {formatMoney((line.total ?? line.unitPrice * line.quantity) - line.unitCost * line.quantity)}
+                            </span>
+                          </div>
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            {line.allocations.map((a, i) => (
+                              <span key={i} className={`rounded-lg px-2 py-1 text-xs ring-1 ${a.fallback ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-white text-slate-700 ring-slate-200'}`}>
+                                <b>{a.quantity}</b> من {a.fallback ? 'رصيد بدون دفعة' : (
+                                  <>دفعة <bdi dir="ltr" className="font-mono font-bold">{a.reference || '—'}</bdi></>
+                                )}
+                                {a.supplierName && <> · {a.supplierName}</>}
+                                {a.viaTransfer && <> · محوّلة <bdi dir="ltr">{a.viaTransfer}</bdi></>}
+                                {' · '}بسعر <b>{formatMoney(a.unitCost)}</b>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
-              </tbody>
-            </Table>
-            {saleFifo && saleFifo.lines.some((l) => l.allocations.length > 0) && (
-              <div className="mt-4 rounded-xl border border-slate-200 p-3 no-print">
-                <div className="mb-2 text-sm font-bold text-slate-800">مسحوب من أنهي دفعة (FIFO)</div>
-                <div className="space-y-2">
-                  {saleFifo.lines.map((line) => (
-                    <div key={line.lineId} className="rounded-lg bg-slate-50 p-2 text-sm">
-                      <div className="flex flex-wrap justify-between gap-2">
-                        <span className="font-bold">{line.name} · {line.quantity}</span>
-                        <span className="text-xs text-muted">
-                          تكلفة الوحدة {formatMoney(line.unitCost)} · ربح البند {formatMoney((line.total ?? line.unitPrice * line.quantity) - line.unitCost * line.quantity)}
-                        </span>
-                      </div>
-                      <div className="mt-1 flex flex-wrap gap-1.5">
-                        {line.allocations.map((a, i) => (
-                          <span key={i} className={`rounded-lg px-2 py-1 text-xs ring-1 ${a.fallback ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-white text-slate-700 ring-slate-200'}`}>
-                            <b>{a.quantity}</b> من {a.fallback ? 'رصيد بدون دفعة' : (
-                              <>دفعة <bdi dir="ltr" className="font-mono font-bold">{a.reference || '—'}</bdi></>
-                            )}
-                            {a.supplierName && <> · {a.supplierName}</>}
-                            {a.viaTransfer && <> · محوّلة <bdi dir="ltr">{a.viaTransfer}</bdi></>}
-                            {' · '}بسعر <b>{formatMoney(a.unitCost)}</b>
-                          </span>
-                        ))}
+                {(() => {
+                  const p = invoiceProfit(view);
+                  if (!p || !canSeeProfit) return null;
+                  return (
+                    <div className="space-y-1.5 rounded-2xl border border-emerald-200 bg-emerald-50/60 px-4 py-3 text-sm">
+                      <div className="flex justify-between"><span>البنود بعد الخصم</span><b>{formatMoney(view.subtotal - view.discount)}</b></div>
+                      {(view.scrapAmount || 0) > 0 && (
+                        <div className="flex justify-between"><span>+ خردة مستلمة من العميل</span><b>{formatMoney(view.scrapAmount || 0)}</b></div>
+                      )}
+                      <div className="flex justify-between border-t border-emerald-200 pt-1.5"><span>إيراد الفاتورة</span><b>{formatMoney(p.revenue)}</b></div>
+                      <div className="flex justify-between"><span>− تكلفة البضاعة (FIFO)</span><b>{formatMoney(p.cost)}</b></div>
+                      <div className={`flex justify-between rounded-xl px-3 py-2 text-base font-extrabold text-white ${p.profit >= 0 ? 'bg-emerald-600' : 'bg-rose-600'}`}>
+                        <span>ربح الفاتورة</span>
+                        <span>{formatMoney(p.profit)}</span>
                       </div>
                     </div>
-                  ))}
+                  );
+                })()}
+                <div>
+                  <div className="mb-2 text-sm font-semibold text-slate-700">حركات التحصيل</div>
+                  {!view.receipts?.length ? (
+                    <div className="text-sm text-muted">لا توجد حركات تحصيل على الفاتورة</div>
+                  ) : (
+                    <Table>
+                      <thead>
+                        <tr>
+                          <Th>التاريخ</Th>
+                          <Th>رقم الحركة</Th>
+                          <Th>طريقة الدفع</Th>
+                          <Th>المبلغ</Th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {view.receipts.map((r) => (
+                          <tr key={r.id} className="row-debit">
+                            <Td>{formatDate(r.receivedAt)}</Td>
+                            <Td className="font-semibold">{r.number}</Td>
+                            <Td>{methods.find((method) => method.id === r.paymentMethod)?.name || '—'}</Td>
+                            <Td className="font-bold">{formatMoney(r.amount)}</Td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </Table>
+                  )}
                 </div>
               </div>
             )}
-            <div className="mt-4 space-y-1 text-sm">
-              <div className="flex justify-between"><span>المجموع</span><span>{formatMoney(view.subtotal)}</span></div>
-              {view.discount > 0 && <div className="flex justify-between text-amber-700"><span>الخصم</span><span>{formatMoney(view.discount)}</span></div>}
-              {view.tax > 0 && <div className="flex justify-between"><span>الضريبة</span><span>{formatMoney(view.tax)}</span></div>}
-              <div className="flex justify-between"><span>المدفوع</span><span>{formatMoney(view.paidAmount)}</span></div>
-              <div className="flex justify-between font-bold">
-                <span>المتبقي</span>
-                {view.status === 'CANCELLED' ? <span>{formatMoney(0)}</span> : <DueAmount date={view.invoiceDate} remaining={view.total - view.paidAmount} />}
-              </div>
-              <div className="flex justify-between text-lg font-extrabold">
-                <span>المطلوب من العميل</span>
-                <span>{formatMoney(view.total)}</span>
-              </div>
-            </div>
-            {(() => {
-              const p = invoiceProfit(view);
-              if (!p || !canSeeProfit) return null;
-              return (
-                <div className="mt-4 space-y-1.5 rounded-2xl border border-emerald-200 bg-emerald-50/60 px-4 py-3 text-sm no-print">
-                  <div className="flex justify-between"><span>البنود بعد الخصم</span><b>{formatMoney(view.subtotal - view.discount)}</b></div>
-                  {(view.scrapAmount || 0) > 0 && (
-                    <div className="flex justify-between"><span>+ خردة مستلمة من العميل</span><b>{formatMoney(view.scrapAmount || 0)}</b></div>
-                  )}
-                  <div className="flex justify-between border-t border-emerald-200 pt-1.5"><span>إيراد الفاتورة</span><b>{formatMoney(p.revenue)}</b></div>
-                  <div className="flex justify-between"><span>− تكلفة البضاعة (FIFO)</span><b>{formatMoney(p.cost)}</b></div>
-                  <div className={`flex justify-between rounded-xl px-3 py-2 text-base font-extrabold text-white ${p.profit >= 0 ? 'bg-emerald-600' : 'bg-rose-600'}`}>
-                    <span>ربح الفاتورة</span>
-                    <span>{formatMoney(p.profit)}</span>
-                  </div>
-                </div>
-              );
-            })()}
-            <div className="mt-4">
-              <div className="mb-2 text-sm font-semibold text-slate-700">حركات التحصيل</div>
-              {!view.receipts?.length ? (
-                <div className="text-sm text-muted">لا توجد حركات تحصيل على الفاتورة</div>
-              ) : (
-                <Table>
-                  <thead>
-                    <tr>
-                      <Th>التاريخ</Th>
-                      <Th>رقم الحركة</Th>
-                      <Th>طريقة الدفع</Th>
-                      <Th>المبلغ</Th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {view.receipts.map((r) => (
-                      <tr key={r.id} className="row-debit">
-                        <Td>{formatDate(r.receivedAt)}</Td>
-                        <Td className="font-semibold">{r.number}</Td>
-                        <Td>{methods.find((method) => method.id === r.paymentMethod)?.name || '—'}</Td>
-                        <Td className="font-bold">{formatMoney(r.amount)}</Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </Table>
-              )}
-            </div>
-          </div>
+          />
         )}
       </Modal>
     </div>

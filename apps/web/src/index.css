@@ -112,6 +112,19 @@ body {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+  .invoice-sheet,
+  .invoice-sheet * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .invoice-sheet {
+    border: none !important;
+  }
+  .invoice-table thead tr,
+  .invoice-table thead th {
+    background: var(--invoice-accent, var(--color-brand-700)) !important;
+    color: #fff !important;
+  }
   .row-debit,
   .row-credit,
   .status-PAID,

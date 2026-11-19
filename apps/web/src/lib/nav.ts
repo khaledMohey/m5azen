@@ -15,6 +15,7 @@ import {
   Truck,
   Undo2,
   Users,
+  UserRoundCog,
   Wallet,
   Warehouse,
 } from 'lucide-react';
@@ -78,6 +79,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: 'المالية',
     items: [
       { to: '/finance', label: 'المالية', page: 'finance', icon: Landmark, keywords: 'مصروف شيك وردية' },
+      { to: '/hr', label: 'الموارد البشرية', page: 'hr', icon: UserRoundCog, keywords: 'موظفين مرتبات حضور إجازات hr' },
       { to: '/reports', label: 'التقارير', page: 'reports', icon: BarChart3, keywords: 'تقرير report' },
       { to: '/report-builder', label: 'منشئ التقارير', page: 'reportBuilder', icon: FileBarChart, keywords: 'report builder حفظ تصدير' },
       { to: '/analytics', label: 'التحليلات', page: 'analytics', icon: LineChart, keywords: 'تحليل analytics نمو' },

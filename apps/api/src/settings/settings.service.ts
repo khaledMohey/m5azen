@@ -1,10 +1,12 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { periodLabel, periodParts } from './period-lock';
+
+const LOGO_KEY = 'company/logo';
 
 @Injectable()
 export class SettingsService {
@@ -17,12 +19,60 @@ export class SettingsService {
       if (s.key === 'editPasswordHash') continue;
       map[s.key] = s.value;
     }
+    const logo = await this.prisma.fileBlob.findFirst({ where: { key: { startsWith: `${LOGO_KEY}.` } } });
     return {
       companyName: map.companyName || 'نظام AK Tech لإدارة المخازن',
       apiUrl: map.apiUrl || '',
       ...map,
+      hasLogo: logo ? '1' : '0',
+      logoVersion: logo?.key || '',
       editPasswordSet: settings.some((row) => row.key === 'editPasswordHash' && row.value) ? '1' : '0',
     };
+  }
+
+  async companyProfile() {
+    const settings = await this.prisma.setting.findMany({
+      where: { key: { in: ['companyName', 'taxNumber', 'commercialRegister', 'companyAddress', 'companyPhone'] } },
+    });
+    const map: Record<string, string> = {};
+    for (const row of settings) map[row.key] = row.value;
+    const logo = await this.prisma.fileBlob.findFirst({ where: { key: { startsWith: `${LOGO_KEY}.` } } });
+    return {
+      companyName: map.companyName || 'نظام AK Tech لإدارة المخازن',
+      taxNumber: map.taxNumber || '',
+      commercialRegister: map.commercialRegister || '',
+      companyAddress: map.companyAddress || '',
+      companyPhone: map.companyPhone || '',
+      hasLogo: !!logo,
+      logoVersion: logo?.key || logo?.createdAt?.toISOString() || '',
+    };
+  }
+
+  async saveLogo(file: { buffer: Buffer; mimetype: string }) {
+    const types: Record<string, string> = {
+      'image/png': '.png',
+      'image/jpeg': '.jpg',
+      'image/jpg': '.jpg',
+      'image/webp': '.webp',
+    };
+    const ext = types[file.mimetype];
+    if (!ext) throw new BadRequestException('اللوجو لازم يكون png أو jpg أو webp');
+    await this.prisma.fileBlob.deleteMany({ where: { key: { startsWith: `${LOGO_KEY}.` } } });
+    await this.prisma.fileBlob.create({
+      data: { key: `${LOGO_KEY}${ext}`, mimeType: file.mimetype, data: new Uint8Array(file.buffer) },
+    });
+    return this.companyProfile();
+  }
+
+  async logo(): Promise<{ data: Buffer; mimeType: string }> {
+    const blob = await this.prisma.fileBlob.findFirst({ where: { key: { startsWith: `${LOGO_KEY}.` } } });
+    if (!blob) throw new NotFoundException('لا يوجد لوجو');
+    return { data: Buffer.from(blob.data), mimeType: blob.mimeType };
+  }
+
+  async removeLogo() {
+    await this.prisma.fileBlob.deleteMany({ where: { key: { startsWith: `${LOGO_KEY}.` } } });
+    return this.companyProfile();
   }
 
   async setEditPassword(password: string) {
