@@ -1,18 +1,32 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { HrLeaveType, HrMovementKind, InvoiceStatus, PayrollStatus } from '@prisma/client';
+import {
+  AccountingEvent,
+  AccountingPostQueueStatus,
+  HrLeaveType,
+  HrMovementKind,
+  InvoiceStatus,
+  JournalEntryStatus,
+  PayMethodKind,
+  PayrollStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { FinanceService } from '../finance/finance.service';
+import { PostingService } from '../accounting/posting.service';
+import { QueueService } from '../accounting/queue.service';
+import { JournalService } from '../accounting/journal.service';
 import { HrSettingsService } from './hr-settings.service';
 import {
   eachDayKeys, egyptDayEnd, egyptDayKey, egyptDayStart, egyptWeekday, parseTimeToMinutes,
 } from './egypt-time';
+import { roundMoney, toCents } from '../accounting/money';
 
 @Injectable()
 export class PayrollService {
   constructor(
     private prisma: PrismaService,
     private settings: HrSettingsService,
-    private finance: FinanceService,
+    private posting: PostingService,
+    private accountingQueue: QueueService,
+    private journal: JournalService,
   ) {}
 
   async calc(from: string, to: string, employeeIds?: string[]) {
@@ -50,7 +64,7 @@ export class PayrollService {
       where: {
         employeeId: { in: employees.map((e) => e.id) },
         payrollRun: {
-          status: { in: [PayrollStatus.DRAFT, PayrollStatus.POSTED] },
+          status: { in: [PayrollStatus.DRAFT, PayrollStatus.POSTED, PayrollStatus.PAID] },
           fromDate: { lte: toDate },
           toDate: { gte: fromDate },
         },
@@ -266,37 +280,31 @@ export class PayrollService {
     return run;
   }
 
+  private runTotals(run: { lines: { salaryNet: number; commissionDue: number; net: number }[] }) {
+    const salaryTotal = roundMoney(run.lines.reduce((s, l) => s + l.salaryNet, 0));
+    const commissionTotal = roundMoney(run.lines.reduce((s, l) => s + l.commissionDue, 0));
+    const netTotal = roundMoney(run.lines.reduce((s, l) => s + l.net, 0));
+    return { salaryTotal, commissionTotal, netTotal };
+  }
+
+  /**
+   * اعتماد الكشف: قيد استحقاق فقط (مصروف رواتب/عمولات ↔ رواتب مستحقة).
+   * لا حركة خزنة ولا مصروف تشغيلي من المالية.
+   */
   async post(id: string, actorId: string, methodId?: string) {
     const run = await this.findRun(id);
-    if (run.status !== PayrollStatus.DRAFT) throw new BadRequestException('الكشف مترحّل بالفعل أو مش مسودة');
-    const payMethodId = methodId || run.methodId;
-    if (!payMethodId) throw new BadRequestException('حدد طريقة الدفع للترحيل');
-
-    const salaryTotal = Math.round(run.lines.reduce((s, l) => s + l.salaryNet, 0) * 100) / 100;
-    const commissionTotal = Math.round(run.lines.reduce((s, l) => s + l.commissionDue, 0) * 100) / 100;
-    if (salaryTotal + commissionTotal <= 0) throw new BadRequestException('صافي الصرف صفر');
-
-    const salaryCat = await this.ensureCategory('رواتب');
-    const commissionCat = await this.ensureCategory('عمولات');
-
-    if (salaryTotal > 0) {
-      await this.finance.createExpense({
-        categoryId: salaryCat.id,
-        methodId: payMethodId,
-        amount: salaryTotal,
-        expenseDate: egyptDayKey(run.toDate),
-        notes: `كشف مرتبات ${egyptDayKey(run.fromDate)} → ${egyptDayKey(run.toDate)}`,
-      });
+    if (run.status !== PayrollStatus.DRAFT) {
+      // Idempotent: already approved — return without duplicate JE
+      if (run.status === PayrollStatus.POSTED || run.status === PayrollStatus.PAID) {
+        return run;
+      }
+      throw new BadRequestException('الكشف مترحّل بالفعل أو مش مسودة');
     }
-    if (commissionTotal > 0) {
-      await this.finance.createExpense({
-        categoryId: commissionCat.id,
-        methodId: payMethodId,
-        amount: commissionTotal,
-        expenseDate: egyptDayKey(run.toDate),
-        notes: `عمولات مع كشف مرتبات ${egyptDayKey(run.fromDate)} → ${egyptDayKey(run.toDate)}`,
-      });
-    }
+
+    const { salaryTotal, commissionTotal, netTotal } = this.runTotals(run);
+    if (toCents(netTotal) <= 0) throw new BadRequestException('صافي الصرف صفر');
+
+    const preferredMethodId = methodId || run.methodId || null;
 
     await this.prisma.$transaction(async (tx) => {
       for (const line of run.lines) {
@@ -318,7 +326,7 @@ export class PayrollService {
               salesTotal: detail.salesTotal || 0,
               percent: employee?.commissionPercent || 0,
               amount: line.commissionDue,
-              notes: 'صرف مع كشف المرتبات',
+              notes: 'استحقاق مع كشف المرتبات',
             },
           });
         }
@@ -328,9 +336,344 @@ export class PayrollService {
         where: { id: run.id },
         data: {
           status: PayrollStatus.POSTED,
-          methodId: payMethodId,
+          methodId: preferredMethodId,
           postedAt: new Date(),
           postedById: actorId,
+        },
+      });
+    });
+
+    try {
+      await this.posting.postPayrollAccrual(id);
+    } catch (error) {
+      console.error('Accounting payroll accrual failed', error);
+      try {
+        await this.accountingQueue.enqueue(AccountingEvent.PAYROLL_POST, id);
+      } catch (queueError) {
+        console.error('Accounting payroll accrual enqueue failed', queueError);
+      }
+    }
+
+    void salaryTotal;
+    void commissionTotal;
+    return this.findRun(id);
+  }
+
+  private payrollCashReference(runId: string) {
+    return `PAYROLL-${runId}`;
+  }
+
+  private payrollCashReversalReference(runId: string) {
+    return `REV-PAYROLL-${runId}`;
+  }
+
+  /**
+   * صرف الكشف بالكامل: claim ذري + حركة خزنة + outbox محاسبي في معاملة واحدة.
+   * لا ينشئ Expense / EXPENSE_CREATE.
+   */
+  async pay(id: string, actorId: string, methodId?: string) {
+    const run = await this.findRun(id);
+    // قراءة تمهيدية فقط — الحسم النهائي داخل updateMany الشرطي
+    if (run.status === PayrollStatus.PAID && toCents(run.paidAmount) > 0) {
+      return run;
+    }
+    if (run.status === PayrollStatus.DRAFT) {
+      throw new BadRequestException('اعتمد الكشف أولًا قبل الصرف');
+    }
+
+    const payMethodId = methodId || run.methodId;
+    if (!payMethodId) throw new BadRequestException('حدد طريقة الدفع للصرف');
+
+    const method = await this.prisma.payMethod.findUnique({ where: { id: payMethodId } });
+    if (!method || method.kind !== PayMethodKind.IMMEDIATE || !method.cashAccountId) {
+      throw new BadRequestException('صرف المرتبات من طريقة دفع فورية مربوطة بخزنة');
+    }
+
+    const { netTotal } = this.runTotals(run);
+    if (toCents(netTotal) <= 0) throw new BadRequestException('صافي الصرف صفر');
+
+    const accrual = await this.prisma.journalEntry.findUnique({
+      where: {
+        sourceType_sourceId: {
+          sourceType: AccountingEvent.PAYROLL_POST,
+          sourceId: id,
+        },
+      },
+    });
+    if (!accrual || accrual.status !== JournalEntryStatus.POSTED) {
+      try {
+        await this.posting.postPayrollAccrual(id);
+      } catch {
+        await this.accountingQueue.enqueue(AccountingEvent.PAYROLL_POST, id);
+        throw new BadRequestException('قيد الاستحقاق غير جاهز — أعد محاولة الصرف بعد معالجة الطابور');
+      }
+    }
+
+    const paidAt = new Date();
+    const cashRef = this.payrollCashReference(id);
+    const payload = {
+      amount: netTotal,
+      cashAccountId: method.cashAccountId,
+      methodId: payMethodId,
+    };
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        // 1) claim ذري — طلبان متزامنان: واحد فقط count=1
+        const claimed = await tx.payrollRun.updateMany({
+          where: {
+            id,
+            status: PayrollStatus.POSTED,
+            paidAmount: 0,
+          },
+          data: {
+            status: PayrollStatus.PAID,
+            methodId: payMethodId,
+            accountId: method.cashAccountId,
+            paidAmount: netTotal,
+            paidAt,
+            paidById: actorId,
+          },
+        });
+        if (claimed.count !== 1) {
+          throw new BadRequestException('PAYROLL_PAY_CLAIM_FAILED');
+        }
+
+        // 2) حركة نقدية واحدة
+        await tx.cashAccount.update({
+          where: { id: method.cashAccountId! },
+          data: { balance: { decrement: netTotal } },
+        });
+        await tx.cashTransaction.create({
+          data: {
+            accountId: method.cashAccountId!,
+            direction: 'OUT',
+            amount: netTotal,
+            description: `صرف مرتبات ${egyptDayKey(run.fromDate)} → ${egyptDayKey(run.toDate)}`,
+            paymentMethod: payMethodId,
+            reference: cashRef,
+            createdById: actorId,
+          },
+        });
+
+        // 3) outbox محاسبي في نفس المعاملة
+        await this.accountingQueue.enqueueInTx(
+          tx,
+          AccountingEvent.PAYROLL_PAYMENT,
+          id,
+          payload,
+        );
+      });
+    } catch (error) {
+      const current = await this.findRun(id);
+      if (current.status === PayrollStatus.PAID && toCents(current.paidAmount) > 0) {
+        // طلب منافس فاز بالـ claim — رجوع آمن بدون صرف ثانٍ
+        return current;
+      }
+      if (error instanceof BadRequestException && error.message === 'PAYROLL_PAY_CLAIM_FAILED') {
+        throw new BadRequestException('تعذر صرف الكشف — مش معتمد أو اتصرّف بالفعل');
+      }
+      throw error;
+    }
+
+    // ترحيل فوري اختياري؛ الطابور يضمن الاسترداد إن فشل
+    try {
+      const entry = await this.posting.postPayrollPayment(id, {
+        amount: netTotal,
+        cashAccountId: method.cashAccountId,
+        methodId: payMethodId,
+        entryDate: paidAt,
+      });
+      await this.prisma.accountingPostQueue.updateMany({
+        where: {
+          event: AccountingEvent.PAYROLL_PAYMENT,
+          sourceId: id,
+          status: {
+            in: [
+              AccountingPostQueueStatus.PENDING,
+              AccountingPostQueueStatus.FAILED,
+              AccountingPostQueueStatus.PROCESSING,
+            ],
+          },
+        },
+        data: {
+          status: AccountingPostQueueStatus.POSTED,
+          postedEntryId: entry.id,
+          lockedBy: null,
+          leaseExpiresAt: null,
+          lastError: null,
+        },
+      });
+    } catch (error) {
+      console.error('Accounting payroll payment post deferred to queue', error);
+    }
+
+    return this.findRun(id);
+  }
+
+  /**
+   * عكس صرف كشف مدفوع: قيد الصرف (إن وُجد) ثم حركة خزنة IN مطابقة + إعادة الحالة POSTED.
+   * لا يحذف حركة OUT الأصلية.
+   */
+  async reversePayment(id: string, actorId: string, reason?: string) {
+    const run = await this.findRun(id);
+    if (run.status !== PayrollStatus.PAID || toCents(run.paidAmount) <= 0) {
+      throw new BadRequestException('عكس الصرف للكشوف المصروفة فقط');
+    }
+    if (!run.accountId) {
+      throw new BadRequestException('خزنة الصرف غير مسجّلة على الكشف — راجع يدويًا');
+    }
+
+    const queueRow = await this.prisma.accountingPostQueue.findUnique({
+      where: {
+        event_sourceId: {
+          event: AccountingEvent.PAYROLL_PAYMENT,
+          sourceId: id,
+        },
+      },
+    });
+    if (queueRow?.status === AccountingPostQueueStatus.PROCESSING) {
+      throw new BadRequestException('ترحيل قيد الصرف قيد المعالجة — أعد المحاولة بعد انتهاء الطابور');
+    }
+
+    const paymentJe = await this.prisma.journalEntry.findUnique({
+      where: {
+        sourceType_sourceId: {
+          sourceType: AccountingEvent.PAYROLL_PAYMENT,
+          sourceId: id,
+        },
+      },
+    });
+
+    if (paymentJe?.status === JournalEntryStatus.POSTED) {
+      await this.journal.reverse(paymentJe.id, {
+        userId: actorId,
+        reason: reason || 'عكس صرف مرتبات',
+      });
+      await this.prisma.journalEntry.update({
+        where: { id: paymentJe.id },
+        data: { sourceId: `ARCH-PAY-${id}-${paymentJe.id}` },
+      });
+    } else if (paymentJe && paymentJe.status !== JournalEntryStatus.REVERSED) {
+      throw new BadRequestException('حالة قيد الصرف لا تسمح بالعكس التلقائي');
+    }
+
+    if (queueRow && queueRow.status !== AccountingPostQueueStatus.POSTED) {
+      await this.accountingQueue.cancel(queueRow.id, reason || 'إلغاء outbox بعد عكس صرف المرتبات');
+    }
+
+    const amount = roundMoney(run.paidAmount);
+    const cashOutRef = this.payrollCashReference(id);
+    const cashInRef = this.payrollCashReversalReference(id);
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const claimed = await tx.payrollRun.updateMany({
+          where: {
+            id,
+            status: PayrollStatus.PAID,
+            paidAmount: amount,
+          },
+          data: {
+            status: PayrollStatus.POSTED,
+            paidAmount: 0,
+            paidAt: null,
+            paidById: null,
+          },
+        });
+        if (claimed.count !== 1) {
+          throw new BadRequestException('PAYROLL_UNPAY_CLAIM_FAILED');
+        }
+
+        const existingOut = await tx.cashTransaction.findFirst({
+          where: { reference: cashOutRef, direction: 'OUT', accountId: run.accountId! },
+        });
+        if (!existingOut) {
+          throw new BadRequestException('حركة صرف الخزنة الأصلية غير موجودة — لا عكس تلقائي');
+        }
+        const alreadyReversed = await tx.cashTransaction.findFirst({
+          where: { reference: cashInRef, direction: 'IN', accountId: run.accountId! },
+        });
+        if (alreadyReversed) {
+          throw new BadRequestException('عكس حركة الخزنة مسجّل مسبقًا');
+        }
+
+        await tx.cashAccount.update({
+          where: { id: run.accountId! },
+          data: { balance: { increment: amount } },
+        });
+        await tx.cashTransaction.create({
+          data: {
+            accountId: run.accountId!,
+            direction: 'IN',
+            amount,
+            description: `عكس صرف مرتبات ${egyptDayKey(run.fromDate)} → ${egyptDayKey(run.toDate)}`,
+            paymentMethod: run.methodId || '',
+            reference: cashInRef,
+            createdById: actorId,
+          },
+        });
+      });
+    } catch (error) {
+      if (error instanceof BadRequestException && error.message === 'PAYROLL_UNPAY_CLAIM_FAILED') {
+        throw new BadRequestException('تعذر عكس الصرف — الحالة تغيّرت');
+      }
+      throw error;
+    }
+
+    return this.findRun(id);
+  }
+
+  /**
+   * عكس قيد الاستحقاق فقط إن لم يُصرف الكشف. لا يحذف القيود المرحّلة.
+   */
+  async reverseAccrual(id: string, actorId: string, reason?: string) {
+    const run = await this.findRun(id);
+    if (run.status === PayrollStatus.PAID || toCents(run.paidAmount) > 0) {
+      throw new BadRequestException(
+        'الكشف مدفوع — استخدم عكس الصرف أولًا ثم عكس الاستحقاق',
+      );
+    }
+    if (run.status !== PayrollStatus.POSTED) {
+      throw new BadRequestException('عكس الاستحقاق للكشوف المعتمدة غير المدفوعة فقط');
+    }
+
+    const accrual = await this.prisma.journalEntry.findUnique({
+      where: {
+        sourceType_sourceId: {
+          sourceType: AccountingEvent.PAYROLL_POST,
+          sourceId: id,
+        },
+      },
+    });
+    if (!accrual) throw new NotFoundException('قيد الاستحقاق غير موجود');
+    if (accrual.status === JournalEntryStatus.REVERSED) {
+      throw new BadRequestException('القيد معكوس بالفعل');
+    }
+
+    await this.journal.reverse(accrual.id, {
+      userId: actorId,
+      reason: reason || 'عكس استحقاق مرتبات',
+    });
+
+    // حرّر مفتاح المصدر حتى يمكن إعادة اعتماد الكشف لاحقًا دون تكرار صامت للقيد المعكوس
+    await this.prisma.journalEntry.update({
+      where: { id: accrual.id },
+      data: { sourceId: `ARCH-${id}-${accrual.id}` },
+    });
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.hrMovement.updateMany({
+        where: { payrollRunId: id },
+        data: { settled: false, payrollRunId: null },
+      });
+      await tx.hrCommissionPayment.deleteMany({ where: { payrollRunId: id } });
+      await tx.payrollRun.update({
+        where: { id },
+        data: {
+          status: PayrollStatus.DRAFT,
+          postedAt: null,
+          postedById: null,
         },
       });
     });
@@ -347,12 +690,53 @@ export class PayrollService {
 
   listPayments() {
     return this.prisma.payrollRun.findMany({
-      where: { status: PayrollStatus.POSTED },
+      where: { status: { in: [PayrollStatus.POSTED, PayrollStatus.PAID] } },
       include: {
         lines: { include: { employee: { select: { id: true, code: true, name: true } } } },
       },
-      orderBy: { postedAt: 'desc' },
+      orderBy: [{ paidAt: 'desc' }, { postedAt: 'desc' }],
     });
+  }
+
+  /**
+   * أرصدة مستحقة تشغيلية حسب الموظف من سطور الكشوف غير المدفوعة.
+   * ليس أستاذ GL فرعيًا (لا employeeId على JournalLine).
+   */
+  async employeePayables() {
+    const lines = await this.prisma.payrollLine.findMany({
+      where: { payrollRun: { status: PayrollStatus.POSTED } },
+      include: {
+        employee: { select: { id: true, code: true, name: true } },
+        payrollRun: { select: { id: true, fromDate: true, toDate: true, status: true, paidAmount: true } },
+      },
+      orderBy: { payrollRun: { fromDate: 'desc' } },
+    });
+    const byEmployee = new Map<string, {
+      employeeId: string;
+      code: string;
+      name: string;
+      outstanding: number;
+      runs: { payrollRunId: string; fromDate: Date; toDate: Date; net: number }[];
+    }>();
+    for (const line of lines) {
+      const key = line.employeeId;
+      const row = byEmployee.get(key) || {
+        employeeId: line.employeeId,
+        code: line.employee.code,
+        name: line.employee.name,
+        outstanding: 0,
+        runs: [],
+      };
+      row.outstanding = roundMoney(row.outstanding + line.net);
+      row.runs.push({
+        payrollRunId: line.payrollRunId,
+        fromDate: line.payrollRun.fromDate,
+        toDate: line.payrollRun.toDate,
+        net: line.net,
+      });
+      byEmployee.set(key, row);
+    }
+    return [...byEmployee.values()].sort((a, b) => a.name.localeCompare(b.name, 'ar'));
   }
 
   covered(employeeId?: string) {
@@ -364,11 +748,5 @@ export class PayrollService {
       },
       orderBy: { payrollRun: { fromDate: 'desc' } },
     });
-  }
-
-  private async ensureCategory(name: string) {
-    const existing = await this.prisma.expenseCategory.findUnique({ where: { name } });
-    if (existing) return existing;
-    return this.prisma.expenseCategory.create({ data: { name } });
   }
 }

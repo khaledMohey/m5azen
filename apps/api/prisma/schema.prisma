@@ -107,6 +107,8 @@ model User {
   orgNodeId        String?
   orgNode          OrgNode?          @relation(fields: [orgNodeId], references: [id], onDelete: SetNull)
   employee         Employee?
+  journalEntries   JournalEntry[]    @relation("JournalCreatedBy")
+  accountingAudits AccountingAuditLog[] @relation("AccountingAuditUser")
 }
 
 model Warehouse {
@@ -292,6 +294,8 @@ model Supplier {
   warehouses       SupplierWarehouse[]
   scrapSales       ScrapSale[]
   oldBatteries     OldBattery[]
+  journalLines     JournalLine[]
+  openingBalances  AccountOpeningBalance[]
 }
 
 model Customer {
@@ -312,11 +316,13 @@ model Customer {
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 
-  salesInvoices SalesInvoice[]
-  salesReturns  SalesReturn[]
-  receipts      Receipt[]
-  warehouses    CustomerWarehouse[]
-  oldBatteries  OldBattery[]
+  salesInvoices   SalesInvoice[]
+  salesReturns    SalesReturn[]
+  receipts        Receipt[]
+  warehouses      CustomerWarehouse[]
+  oldBatteries    OldBattery[]
+  journalLines    JournalLine[]
+  openingBalances AccountOpeningBalance[]
 }
 
 /// عملاء مربوطين بمخزن. من غير صفوف = ظاهر لكل المخازن.
@@ -364,6 +370,7 @@ model CashAccount {
   payMethod    PayMethod?
   salesReturns SalesReturn[]
   scrapSales   ScrapSale[]
+  glAccount    Account?
 }
 
 model PayMethod {
@@ -419,6 +426,8 @@ model SalesInvoice {
   shiftId       String?
   notes         String?
   createdById   String?
+  /// Monotonic epoch advanced on accepted FIFO cost publish
+  cogsEpoch     Int           @default(0)
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
@@ -430,6 +439,8 @@ model SalesInvoice {
   receipts     Receipt[]
   returns      SalesReturn[]
   oldBatteries OldBattery[]
+  cogsDirty    AccountingCogsDirty?
+  cogsLock     AccountingCogsLock?
 
   @@index([invoiceDate])
   @@index([status])
@@ -848,14 +859,25 @@ model ExpenseCategory {
 
 /// سجل الأصول الثابتة — مجموع قيمها = رأس مال الشركة المسجّل
 model FixedAsset {
-  id         String   @id @default(cuid())
-  name       String
-  value      Float
-  acquiredAt DateTime @default(now())
-  notes      String?
-  isActive   Boolean  @default(true)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id                   String    @id @default(cuid())
+  name                 String
+  value                Float
+  acquiredAt           DateTime  @default(now())
+  notes                String?
+  isActive             Boolean   @default(true)
+  category             String?
+  usefulLifeMonths     Int?
+  residualValue        Float     @default(0)
+  depreciationMethod   String    @default("STRAIGHT_LINE")
+  accumulatedDepreciation Float  @default(0)
+  glAccountId          String?
+  accumDepAccountId    String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  glAccount       Account? @relation("FixedAssetGl", fields: [glAccountId], references: [id], onDelete: SetNull)
+  accumDepAccount Account? @relation("FixedAssetAccumDep", fields: [accumDepAccountId], references: [id], onDelete: SetNull)
+  depEntries      FixedAssetDepreciation[]
 
   @@index([isActive])
   @@index([acquiredAt])
@@ -1163,6 +1185,7 @@ enum HrAttendanceStatus {
 enum PayrollStatus {
   DRAFT
   POSTED
+  PAID
 }
 
 model Employee {
@@ -1314,6 +1337,10 @@ model PayrollRun {
   notes       String?
   postedAt    DateTime?
   postedById  String?
+  /// Cumulative cash paid against this run (full payment only in v1)
+  paidAmount  Float         @default(0)
+  paidAt      DateTime?
+  paidById    String?
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
@@ -1373,4 +1400,408 @@ model HrCommissionPayment {
   payrollRun PayrollRun? @relation(fields: [payrollRunId], references: [id], onDelete: SetNull)
 
   @@index([employeeId, fromDate, toDate])
+}
+
+// ─────────────────────────────────────────────
+// Accounting Foundation
+// ─────────────────────────────────────────────
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+enum AccountNormalBalance {
+  DEBIT
+  CREDIT
+}
+
+enum AccountSubledger {
+  NONE
+  AR
+  AP
+}
+
+enum JournalEntryStatus {
+  DRAFT
+  POSTED
+  REVERSED
+}
+
+enum AccountingEvent {
+  SALE_CONFIRM
+  SALE_RECEIPT
+  SALE_COGS_ADJUST
+  PURCHASE_CONFIRM
+  PURCHASE_PAYMENT
+  EXPENSE_CREATE
+  SALE_RETURN
+  PURCHASE_RETURN
+  STOCK_ADJUSTMENT
+  STOCK_TRANSFER
+  CHECK_CLEAR_IN
+  CHECK_CLEAR_OUT
+  CHECK_BOUNCE_IN
+  CHECK_BOUNCE_OUT
+  PAYROLL_POST
+  PAYROLL_PAYMENT
+  SCRAP_SALE
+  OPENING_BALANCE
+  MANUAL
+  DEPRECIATION
+  MFG_MATERIAL_ISSUE
+  MFG_WIP
+  MFG_FINISHED_GOODS
+}
+
+enum AccountingPartyType {
+  NONE
+  CUSTOMER
+  SUPPLIER
+}
+
+enum AccountingRole {
+  ACCOUNTS_RECEIVABLE
+  ACCOUNTS_PAYABLE
+  SALES_REVENUE
+  SALES_TAX_PAYABLE
+  SALES_DISCOUNT
+  PURCHASE_DISCOUNT
+  PURCHASE_TAX_RECEIVABLE
+  COGS
+  INVENTORY
+  CASH
+  BANK
+  UNDEPOSITED_CHECKS
+  CHECKS_PAYABLE
+  EXPENSE
+  PAYROLL_EXPENSE
+  COMMISSION_EXPENSE
+  SALARIES_PAYABLE
+  SCRAP_REVENUE
+  SCRAP_INVENTORY
+  INVENTORY_ADJUSTMENT
+  STOCK_TRANSFER_CLEARING
+  SALES_RETURN_CLEARING
+  PURCHASE_RETURN_CLEARING
+  FIXED_ASSET
+  ACCUMULATED_DEPRECIATION
+  DEPRECIATION_EXPENSE
+  OWNER_EQUITY
+  OPENING_EQUITY
+  RETAINED_EARNINGS
+  OTHER
+}
+
+enum MappingSide {
+  DEBIT
+  CREDIT
+}
+
+enum AccountResolutionMode {
+  FIXED
+  CASH_ACCOUNT
+  PAY_METHOD
+}
+
+enum MappingAmountSource {
+  DOCUMENT_TOTAL
+  DOCUMENT_SUBTOTAL
+  DOCUMENT_DISCOUNT
+  DOCUMENT_NET
+  DOCUMENT_TAX
+  DOCUMENT_SCRAP
+  LINE_COGS_SUM
+  COGS_DELTA
+  TENDER_AMOUNT
+  OPENING_ROW
+  SCRAP_AMOUNT
+  STOCK_VALUE
+  FIXED_ASSET_VALUE
+  SALARY_AMOUNT
+  COMMISSION_AMOUNT
+  CONTEXT
+}
+
+enum OpeningBatchStatus {
+  DRAFT
+  APPLIED
+  REVERSED
+}
+
+enum AccountingPostQueueStatus {
+  PENDING
+  PROCESSING
+  POSTED
+  FAILED
+  CANCELLED
+}
+
+model Account {
+  id            String               @id @default(cuid())
+  code          String               @unique
+  name          String
+  type          AccountType
+  parentId      String?
+  isPostable    Boolean              @default(true)
+  isActive      Boolean              @default(true)
+  cashAccountId String?              @unique
+  normalBalance AccountNormalBalance @default(DEBIT)
+  subledger     AccountSubledger     @default(NONE)
+  sortOrder     Int                  @default(0)
+  costCenterId  String?
+  notes         String?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  parent   Account?  @relation("AccountTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children Account[] @relation("AccountTree")
+
+  cashAccount CashAccount? @relation(fields: [cashAccountId], references: [id], onDelete: SetNull)
+  costCenter  CostCenter?  @relation(fields: [costCenterId], references: [id], onDelete: SetNull)
+
+  journalLines     JournalLine[]
+  mappingLines     AccountMappingLine[]
+  openingBalances  AccountOpeningBalance[]
+  fixedAssetsGl    FixedAsset[]            @relation("FixedAssetGl")
+  fixedAssetsAccum FixedAsset[]            @relation("FixedAssetAccumDep")
+
+  @@index([type])
+  @@index([parentId])
+  @@index([isActive])
+  @@index([subledger])
+  @@index([costCenterId])
+}
+
+model CostCenter {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  accounts     Account[]
+  journalLines JournalLine[]
+}
+
+model JournalEntry {
+  id              String             @id @default(cuid())
+  number          String             @unique
+  entryDate       DateTime
+  description     String             @default("")
+  status          JournalEntryStatus @default(DRAFT)
+  sourceType      AccountingEvent    @default(MANUAL)
+  sourceId        String?
+  fiscalYear      Int
+  fiscalMonth     Int
+  createdById     String?
+  reversesEntryId String?            @unique
+  postedAt        DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  createdBy     User?         @relation("JournalCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  reversesEntry JournalEntry? @relation("JournalReversal", fields: [reversesEntryId], references: [id], onDelete: Restrict)
+  reversalEntry JournalEntry? @relation("JournalReversal")
+
+  lines           JournalLine[]
+  openingBatch    AccountOpeningBatch?  @relation("OpeningBatchEntry")
+  accountingQueue AccountingPostQueue?  @relation("QueuePostedEntry")
+
+  @@unique([sourceType, sourceId])
+  @@index([entryDate])
+  @@index([status])
+  @@index([fiscalYear, fiscalMonth])
+  @@index([sourceType, sourceId])
+}
+
+model JournalLine {
+  id           String              @id @default(cuid())
+  entryId      String
+  accountId    String
+  debit        Float               @default(0)
+  credit       Float               @default(0)
+  description  String?
+  partyType    AccountingPartyType @default(NONE)
+  customerId   String?
+  supplierId   String?
+  costCenterId String?
+  lineOrder    Int                 @default(0)
+  createdAt    DateTime            @default(now())
+
+  entry      JournalEntry @relation(fields: [entryId], references: [id], onDelete: Restrict)
+  account    Account      @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  customer   Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  supplier   Supplier?    @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  costCenter CostCenter?  @relation(fields: [costCenterId], references: [id], onDelete: SetNull)
+
+  @@index([entryId])
+  @@index([accountId])
+  @@index([customerId])
+  @@index([supplierId])
+  @@index([costCenterId])
+}
+
+model AccountMapping {
+  id        String          @id @default(cuid())
+  event     AccountingEvent @unique
+  isActive  Boolean         @default(true)
+  notes     String?
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  lines AccountMappingLine[]
+}
+
+model AccountMappingLine {
+  id             String                @id @default(cuid())
+  mappingId      String
+  role           AccountingRole
+  side           MappingSide
+  resolutionMode AccountResolutionMode @default(FIXED)
+  amountSource   MappingAmountSource
+  amountParam    Float?
+  accountId      String?
+  isRequired     Boolean               @default(true)
+  lineOrder      Int                   @default(0)
+  notes          String?
+
+  mapping AccountMapping @relation(fields: [mappingId], references: [id], onDelete: Cascade)
+  account Account?       @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@unique([mappingId, lineOrder])
+  @@index([mappingId])
+  @@index([accountId])
+  @@index([role])
+}
+
+model AccountOpeningBatch {
+  id             String             @id @default(cuid())
+  fiscalYear     Int
+  version        Int
+  status         OpeningBatchStatus @default(DRAFT)
+  journalEntryId String?            @unique
+  /// When APPLIED: set to String(fiscalYear) to enforce one active batch per year
+  appliedYearKey String?            @unique
+  notes          String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  journalEntry JournalEntry?           @relation("OpeningBatchEntry", fields: [journalEntryId], references: [id], onDelete: Restrict)
+  lines        AccountOpeningBalance[]
+
+  @@unique([fiscalYear, version])
+  @@index([fiscalYear, status])
+}
+
+model AccountOpeningBalance {
+  id         String              @id @default(cuid())
+  batchId    String
+  accountId  String
+  debit      Float               @default(0)
+  credit     Float               @default(0)
+  partyType  AccountingPartyType @default(NONE)
+  customerId String?
+  supplierId String?
+  partyKey   String              @default("NONE")
+  notes      String?
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  batch    AccountOpeningBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  account  Account             @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  customer Customer?           @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  supplier Supplier?           @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+
+  @@unique([batchId, accountId, partyKey])
+  @@index([batchId])
+  @@index([accountId])
+}
+
+model AccountingPostQueue {
+  id             String                     @id @default(cuid())
+  event          AccountingEvent
+  sourceId       String
+  payload        String                     @default("{}")
+  status         AccountingPostQueueStatus  @default(PENDING)
+  attempts       Int                        @default(0)
+  lastError      String?
+  availableAt    DateTime                   @default(now())
+  lockedBy       String?
+  leaseExpiresAt DateTime?
+  claimVersion   Int                        @default(0)
+  postedEntryId  String?                    @unique
+  createdAt      DateTime                   @default(now())
+  updatedAt      DateTime                   @updatedAt
+
+  postedEntry JournalEntry? @relation("QueuePostedEntry", fields: [postedEntryId], references: [id], onDelete: Restrict)
+
+  @@unique([event, sourceId])
+  @@index([status, availableAt])
+  @@index([status, leaseExpiresAt])
+}
+
+model FifoReplayEpoch {
+  productId        String @id
+  nextSeq          Int    @default(0)
+  lastPublishedSeq Int    @default(0)
+}
+
+model AccountingCogsDirty {
+  invoiceId   String   @id
+  generation  Int
+  targetCents Int?
+  dirtyAt     DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  invoice SalesInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([dirtyAt])
+}
+
+model AccountingCogsLock {
+  invoiceId      String    @id
+  lockVersion    Int       @default(0)
+  lockedBy       String?
+  leaseExpiresAt DateTime?
+  updatedAt      DateTime  @updatedAt
+
+  invoice SalesInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+}
+
+model FixedAssetDepreciation {
+  id            String   @id @default(cuid())
+  fixedAssetId  String
+  periodYear    Int
+  periodMonth   Int
+  amount        Float
+  journalEntryId String?
+  createdAt     DateTime @default(now())
+
+  fixedAsset FixedAsset @relation(fields: [fixedAssetId], references: [id], onDelete: Cascade)
+
+  @@unique([fixedAssetId, periodYear, periodMonth])
+  @@index([fixedAssetId])
+}
+
+model AccountingAuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  entityType String
+  entityId   String
+  beforeJson String?
+  afterJson  String?
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  user User? @relation("AccountingAuditUser", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@index([userId])
 }

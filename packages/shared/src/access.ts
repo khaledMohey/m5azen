@@ -10,6 +10,7 @@ export type PageId =
   | 'returns'
   | 'cash'
   | 'finance'
+  | 'accounting'
   | 'hr'
   | 'reports'
   | 'reportBuilder'
@@ -179,6 +180,19 @@ export const PAGES: PageDef[] = [
     fields: [{ id: 'amounts', label: 'المبالغ' }],
   },
   {
+    id: 'accounting',
+    label: 'الحسابات',
+    group: 'المالية',
+    actions: [
+      { id: 'create', label: 'إضافة' },
+      { id: 'edit', label: 'تعديل' },
+      { id: 'post', label: 'ترحيل' },
+      { id: 'void', label: 'عكس / إلغاء' },
+      { id: 'export', label: 'تصدير' },
+    ],
+    fields: [],
+  },
+  {
     id: 'hr',
     label: 'الموارد البشرية',
     group: 'المالية',
@@ -186,7 +200,8 @@ export const PAGES: PageDef[] = [
       { id: 'create', label: 'إضافة' },
       { id: 'edit', label: 'تعديل' },
       { id: 'delete', label: 'حذف' },
-      { id: 'post', label: 'ترحيل مرتبات' },
+      { id: 'post', label: 'ترحيل / صرف مرتبات' },
+      { id: 'void', label: 'عكس استحقاق' },
       { id: 'export', label: 'تصدير' },
       { id: 'request', label: 'طلب إجازة/سلفة/إذن' },
     ],
@@ -292,9 +307,10 @@ export function templateFor(role: string): AccessMap {
   if (role === 'ACCOUNTANT') {
     return {
       ...all,
+      accounting: grant(true, ['create', 'edit', 'post', 'void', 'export'], []),
       audit: off,
       settings: off,
-      hr: grant(true, ['create', 'edit', 'delete', 'post', 'export', 'request'], ['salary', 'amounts']),
+      hr: grant(true, ['create', 'edit', 'delete', 'post', 'void', 'export', 'request'], ['salary', 'amounts']),
     };
   }
   if (role === 'SALES') {
@@ -311,6 +327,7 @@ export function templateFor(role: string): AccessMap {
       returns: grant(true, ['create'], []),
       cash: grant(true, ['receipt'], []),
       finance: off,
+      accounting: off,
       hr: grant(true, ['request'], []),
       reports: off,
       reportBuilder: off,
@@ -333,6 +350,7 @@ export function templateFor(role: string): AccessMap {
       returns: grant(true, ['create'], ['cost']),
       cash: off,
     finance: off,
+    accounting: off,
     hr: grant(true, ['request'], []),
     reports: off,
     reportBuilder: off,

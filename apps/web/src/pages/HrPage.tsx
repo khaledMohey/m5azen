@@ -120,10 +120,12 @@ type PayrollRun = {
   id: string;
   fromDate: string;
   toDate: string;
-  status: 'DRAFT' | 'POSTED';
+  status: 'DRAFT' | 'POSTED' | 'PAID';
   methodId?: string | null;
   notes?: string | null;
   postedAt?: string | null;
+  paidAt?: string | null;
+  paidAmount?: number;
   lines: {
     id: string;
     net: number;
@@ -702,12 +704,31 @@ export function HrPage() {
   }
 
   async function postPayroll(payrollRun: PayrollRun) {
-    const methodId = postMethodByRun[payrollRun.id] || methods[0]?.id;
-    if (!methodId) return toast.error('حدد طريقة الدفع');
-    if (!(await confirm({ title: 'ترحيل كشف المرتبات', message: 'سيُسجّل المصروف ويُقفل الكشف — هل تتابع؟' }))) return;
+    const methodId = postMethodByRun[payrollRun.id] || methods[0]?.id || undefined;
+    if (!(await confirm({
+      title: 'اعتماد كشف المرتبات',
+      message: 'هيتعمل قيد استحقاق (مصروف رواتب ↔ رواتب مستحقة) من غير صرف نقدي. الصرف من تبويب المدفوعات.',
+    }))) return;
     const ok = await run(
-      () => api(`/hr/payroll/runs/${payrollRun.id}/post`, { method: 'POST', body: JSON.stringify({ methodId }) }),
-      'تم ترحيل كشف المرتبات',
+      () => api(`/hr/payroll/runs/${payrollRun.id}/post`, {
+        method: 'POST',
+        body: JSON.stringify(methodId ? { methodId } : {}),
+      }),
+      'تم اعتماد كشف المرتبات',
+    );
+    if (ok) await reloadTab();
+  }
+
+  async function payPayroll(payrollRun: PayrollRun) {
+    const methodId = postMethodByRun[payrollRun.id] || payrollRun.methodId || methods[0]?.id;
+    if (!methodId) return toast.error('حدد طريقة الدفع');
+    if (!(await confirm({
+      title: 'صرف المرتبات',
+      message: 'هيتم خصم المبلغ من الخزنة وتقفيل المستحقات المحاسبية. الدفع الجزئي غير مدعوم.',
+    }))) return;
+    const ok = await run(
+      () => api(`/hr/payroll/runs/${payrollRun.id}/pay`, { method: 'POST', body: JSON.stringify({ methodId }) }),
+      'تم صرف كشف المرتبات',
     );
     if (ok) await reloadTab();
   }
@@ -1300,20 +1321,37 @@ export function HrPage() {
 
       {tab === 'payments' && isStaff && (
         <Card>
-          <CardHeader title="مدفوعات الرواتب المرحّلة" icon={BadgeCheck} />
-          {postedPayrolls.length === 0 ? <Empty text="لا مدفوعات مرحّلة." /> : (
+          <CardHeader title="مدفوعات الرواتب" subtitle="كشوف معتمدة بانتظار الصرف أو مصروفة" icon={BadgeCheck} />
+          {postedPayrolls.length === 0 ? <Empty text="لا كشوف معتمدة أو مصروفة." /> : (
             <Table>
               <thead>
-                <tr><Th>الفترة</Th><Th>تاريخ الترحيل</Th><Th>الموظفين</Th><Th>الصافي</Th><Th>تفاصيل</Th></tr>
+                <tr><Th>الفترة</Th><Th>الحالة</Th><Th>تاريخ الاعتماد</Th><Th>الموظفين</Th><Th>الصافي</Th><Th>إجراء</Th></tr>
               </thead>
               <tbody>
                 {postedPayrolls.map((run) => (
                   <tr key={run.id}>
                     <Td>{formatDate(run.fromDate)} → {formatDate(run.toDate)}</Td>
+                    <Td>{run.status === 'PAID' ? 'مصروف' : 'مستحق'}</Td>
                     <Td>{run.postedAt ? formatDate(run.postedAt) : '—'}</Td>
                     <Td>{run.lines.length}</Td>
                     <Td>{seeSalary ? formatMoney(run.lines.reduce((s, l) => s + l.net, 0)) : '—'}</Td>
-                    <Td><Button type="button" variant="secondary" onClick={() => setSelectedRun(run)}>عرض</Button></Td>
+                    <Td>
+                      <div className="flex flex-wrap gap-1">
+                        <Button type="button" variant="secondary" onClick={() => setSelectedRun(run)}>عرض</Button>
+                        {run.status === 'POSTED' && (
+                          <>
+                            <Select
+                              className="max-w-[120px]"
+                              value={postMethodByRun[run.id] || run.methodId || methods[0]?.id || ''}
+                              onChange={(e) => setPostMethodByRun((m) => ({ ...m, [run.id]: e.target.value }))}
+                            >
+                              {methods.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                            </Select>
+                            <Button type="button" onClick={() => payPayroll(run)} disabled={busy}>صرف</Button>
+                          </>
+                        )}
+                      </div>
+                    </Td>
                   </tr>
                 ))}
               </tbody>
@@ -1696,11 +1734,18 @@ function PayrollRunActions({
             value={postMethodByRun[run.id] || methods[0]?.id || ''}
             onChange={(e) => setPostMethodByRun((m) => ({ ...m, [run.id]: e.target.value }))}
           >
+            <option value="">طريقة دفع لاحقًا</option>
             {methods.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </Select>
-          <Button type="button" onClick={() => onPost(run)} disabled={busy}>ترحيل</Button>
+          <Button type="button" onClick={() => onPost(run)} disabled={busy}>اعتماد</Button>
           <Button type="button" variant="danger" onClick={() => onDelete(run)} disabled={busy}>حذف</Button>
         </>
+      )}
+      {run.status === 'POSTED' && (
+        <span className="text-xs font-semibold text-amber-700">مستحق — اصرف من المدفوعات</span>
+      )}
+      {run.status === 'PAID' && (
+        <span className="text-xs font-semibold text-emerald-700">مصروف</span>
       )}
     </div>
   );

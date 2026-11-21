@@ -20,6 +20,7 @@ const RULES = [
   { prefix: '/api/suppliers', page: 'suppliers' },
   { prefix: '/api/cash', page: 'cash' },
   { prefix: '/api/finance', page: 'finance' },
+  { prefix: '/api/accounting', page: 'accounting' },
   { prefix: '/api/hr', page: 'hr' },
   { prefix: '/api/returns', page: 'returns' },
   { prefix: '/api/reports', page: 'reports' },
@@ -66,7 +67,13 @@ export function actionFor(method: string, path: string, page: PageId) {
   if (page === 'hr') {
     if (/\/requests\/[^/]+\/(?:approve|reject)$/.test(path)) return 'edit';
     if (/\/requests(?:\/[^/]+\/cancel)?$/.test(path) && verb === 'POST') return 'request';
-    if (/\/payroll\/runs\/[^/]+\/post$/.test(path)) return 'post';
+    if (/\/payroll\/runs\/[^/]+\/(?:post|pay)$/.test(path)) return 'post';
+    if (/\/payroll\/runs\/[^/]+\/reverse(?:-payment)?$/.test(path)) return 'void';
+  }
+  if (page === 'accounting') {
+    if (/\/(?:post|apply|seed|queue\/process)(?:\/|$)/.test(path)) return 'post';
+    if (/\/(?:reverse|void)(?:\/|$)/.test(path)) return 'void';
+    if (verb === 'DELETE') return 'edit';
   }
   if (/\/image$/.test(path)) return 'edit';
   if (verb === 'PATCH' || verb === 'PUT') return 'edit';

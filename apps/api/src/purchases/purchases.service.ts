@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { InvoiceStatus, Prisma, StockMovementType } from '@prisma/client';
+import { AccountingEvent, InvoiceStatus, Prisma, StockMovementType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
 import { normalizeTenders, postSupplierTenders, reversePurchaseMoney, sumTenders, syncPurchaseTenders, TenderInput } from '../cash/tenders';
@@ -11,11 +11,15 @@ import { dueTone } from '../common/due';
 import { purchasePriceHints } from '../common/price-hints';
 import { recostProducts } from '../common/fifo';
 import { ScrapCalc, ScrapInput, scrapCalc, syncInvoiceScrap } from '../common/scrap';
+import { PostingService } from '../accounting/posting.service';
+import { QueueService } from '../accounting/queue.service';
 @Injectable()
 export class PurchasesService {
   constructor(
     private prisma: PrismaService,
     private sequence: SequenceService,
+    private posting: PostingService,
+    private accountingQueue: QueueService,
   ) {}
 
   priceHints(supplierId?: string, excludeInvoiceId?: string) {
@@ -283,7 +287,39 @@ export class PurchasesService {
         data: { status, paidAmount, paymentMethod: parts.length === 1 ? parts[0].methodId : '' },
         include: { supplier: true, warehouse: true, lines: { include: { product: true } } },
       });
+    }).then(async (result) => {
+      await this.postPurchaseAccounting(id);
+      return result;
     });
+  }
+
+  private async postPurchaseAccounting(invoiceId: string) {
+    try {
+      await this.posting.postPurchaseConfirm(invoiceId);
+      const payments = await this.prisma.payment.findMany({
+        where: { purchaseInvoiceId: invoiceId },
+        select: { id: true },
+      });
+      for (const payment of payments) {
+        await this.posting.postPurchasePayment(payment.id);
+      }
+    } catch (error) {
+      console.error('Accounting purchase post failed', error);
+      try {
+        await this.accountingQueue.enqueue(AccountingEvent.PURCHASE_CONFIRM, invoiceId, {
+          reason: (error as Error).message,
+        });
+        const payments = await this.prisma.payment.findMany({
+          where: { purchaseInvoiceId: invoiceId },
+          select: { id: true },
+        });
+        for (const payment of payments) {
+          await this.accountingQueue.enqueue(AccountingEvent.PURCHASE_PAYMENT, payment.id);
+        }
+      } catch (queueError) {
+        console.error('Accounting purchase enqueue failed', queueError);
+      }
+    }
   }
 
   async update(id: string, data: {

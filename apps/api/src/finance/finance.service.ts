@@ -1,12 +1,18 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { CheckDirection, CheckStatus, PayMethodKind, ShiftStatus } from '@prisma/client';
+import { AccountingEvent, CheckDirection, CheckStatus, PayMethodKind, ShiftStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { assertPeriodsOpen } from '../settings/period-lock';
 import { pageResult, readPage } from '../common/paging';
+import { PostingService } from '../accounting/posting.service';
+import { QueueService } from '../accounting/queue.service';
 
 @Injectable()
 export class FinanceService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private posting: PostingService,
+    private accountingQueue: QueueService,
+  ) {}
 
   async openShift(data: { userId: string; cashAccountId: string; openingCash: number; notes?: string }) {
     const existing = await this.prisma.cashierShift.findFirst({
@@ -152,6 +158,18 @@ export class FinanceService {
         },
         include: { category: true, account: true },
       });
+    }).then(async (expense) => {
+      try {
+        await this.posting.postExpense(expense.id);
+      } catch (error) {
+        console.error('Accounting expense post failed', error);
+        try {
+          await this.accountingQueue.enqueue(AccountingEvent.EXPENSE_CREATE, expense.id);
+        } catch (queueError) {
+          console.error('Accounting expense enqueue failed', queueError);
+        }
+      }
+      return expense;
     });
   }
 

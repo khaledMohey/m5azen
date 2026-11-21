@@ -3,8 +3,10 @@ import { CashController } from './cash.controller';
 import { CashService } from './cash.service';
 import { PayMethodsService } from './pay-methods.service';
 import { SequenceService } from '../common/sequence.service';
+import { AccountingModule } from '../accounting/accounting.module';
 
 @Module({
+  imports: [AccountingModule],
   controllers: [CashController],
   providers: [CashService, PayMethodsService, SequenceService],
   exports: [CashService, PayMethodsService],

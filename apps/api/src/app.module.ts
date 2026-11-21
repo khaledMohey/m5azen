@@ -24,6 +24,7 @@ import { OpsModule } from './ops/ops.module';
 import { OrgModule } from './org/org.module';
 import { WorkModule } from './work/work.module';
 import { HrModule } from './hr/hr.module';
+import { AccountingModule } from './accounting/accounting.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -47,6 +48,7 @@ import { HealthController } from './health.controller';
     DashboardModule,
     SettingsModule,
     FinanceModule,
+    AccountingModule,
     OpsModule,
     OrgModule,
     WorkModule,

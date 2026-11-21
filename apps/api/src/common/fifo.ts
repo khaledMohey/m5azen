@@ -396,24 +396,53 @@ export function mapSaleLines(outs: FifoOut[], lines: SaleLineRef[]) {
   return byLine;
 }
 
+class StaleFifoPublishError extends Error {
+  constructor() {
+    super('FIFO publish stale');
+    this.name = 'StaleFifoPublishError';
+  }
+}
+
+/** يصدر تذكرة نشر لكل صنف (nextSeq++) داخل معاملة قصيرة */
+export async function issueFifoTickets(db: PrismaClient, productIds: Iterable<string>) {
+  const ids = [...new Set([...productIds].filter(Boolean))].sort();
+  const tickets = new Map<string, number>();
+  if (!ids.length) return tickets;
+  await db.$transaction(async (tx) => {
+    for (const productId of ids) {
+      const row = await tx.fifoReplayEpoch.upsert({
+        where: { productId },
+        create: { productId, nextSeq: 1, lastPublishedSeq: 0 },
+        update: { nextSeq: { increment: 1 } },
+      });
+      tickets.set(productId, row.nextSeq);
+    }
+  });
+  return tickets;
+}
+
+function toCents(amount: number) {
+  return Math.round(amount * 100);
+}
+
 /**
  * يعيد حساب تكلفة كل حركة خارجة وكل بند بيع بنظام FIFO ويحفظها.
  * آمن يتنادى بعد أي عملية مخزون — مش بيغيّر كميات.
+ * نشر ذري مع بوابة FifoReplayEpoch لمنع الكتابة المتأخرة.
  */
 export async function recostProducts(db: PrismaClient, productIds: Iterable<string>) {
-  const ids = [...new Set([...productIds].filter(Boolean))];
+  const ids = [...new Set([...productIds].filter(Boolean))].sort();
   if (!ids.length) return { products: 0, movements: 0, lines: 0 };
   try {
+    const tickets = await issueFifoTickets(db, ids);
     const replay = await replayFifo(db, ids);
-    let movementUpdates = 0;
-    let lineUpdates = 0;
 
+    const movementUpdates: { id: string; unitCost: number }[] = [];
     const saleOutsByRef = new Map<string, Map<string, FifoOut[]>>();
     for (const res of replay.values()) {
       for (const out of res.outs) {
         if (Math.abs(out.unitCost - out.storedCost) > 0.00005) {
-          await db.stockMovement.update({ where: { id: out.movementId }, data: { unitCost: out.unitCost } });
-          movementUpdates += 1;
+          movementUpdates.push({ id: out.movementId, unitCost: out.unitCost });
         }
         if (out.type === StockMovementType.SALE && out.reference) {
           const byProduct = saleOutsByRef.get(out.reference) || new Map<string, FifoOut[]>();
@@ -425,11 +454,20 @@ export async function recostProducts(db: PrismaClient, productIds: Iterable<stri
       }
     }
 
+    const lineUpdates: { id: string; invoiceId: string; unitCost: number }[] = [];
     const refs = [...saleOutsByRef.keys()];
     for (const part of chunks(refs)) {
       const invoices = await db.salesInvoice.findMany({
         where: { number: { in: part } },
-        select: { number: true, lines: { where: { productId: { in: ids } }, orderBy: { id: 'asc' }, select: { id: true, productId: true, quantity: true, unitCost: true } } },
+        select: {
+          id: true,
+          number: true,
+          lines: {
+            where: { productId: { in: ids } },
+            orderBy: { id: 'asc' },
+            select: { id: true, productId: true, quantity: true, unitCost: true },
+          },
+        },
       });
       for (const inv of invoices) {
         const byProduct = saleOutsByRef.get(inv.number);
@@ -441,14 +479,64 @@ export async function recostProducts(db: PrismaClient, productIds: Iterable<stri
             const next = mapped.get(line.id);
             if (!next) continue;
             if (Math.abs(next.unitCost - line.unitCost) > 0.00005) {
-              await db.salesInvoiceLine.update({ where: { id: line.id }, data: { unitCost: next.unitCost } });
-              lineUpdates += 1;
+              lineUpdates.push({ id: line.id, invoiceId: inv.id, unitCost: next.unitCost });
             }
           }
         }
       }
     }
-    return { products: ids.length, movements: movementUpdates, lines: lineUpdates };
+
+    const affectedInvoiceIds = [...new Set(lineUpdates.map((l) => l.invoiceId))];
+
+    try {
+      await db.$transaction(async (tx) => {
+        for (const productId of ids) {
+          const ticket = tickets.get(productId);
+          if (ticket == null) throw new StaleFifoPublishError();
+          const gate = await tx.fifoReplayEpoch.updateMany({
+            where: {
+              productId,
+              nextSeq: ticket,
+              lastPublishedSeq: { lt: ticket },
+            },
+            data: { lastPublishedSeq: ticket },
+          });
+          if (gate.count !== 1) throw new StaleFifoPublishError();
+        }
+
+        for (const row of movementUpdates) {
+          await tx.stockMovement.update({ where: { id: row.id }, data: { unitCost: row.unitCost } });
+        }
+        for (const row of lineUpdates) {
+          await tx.salesInvoiceLine.update({ where: { id: row.id }, data: { unitCost: row.unitCost } });
+        }
+
+        const now = new Date();
+        for (const invoiceId of affectedInvoiceIds) {
+          const inv = await tx.salesInvoice.update({
+            where: { id: invoiceId },
+            data: { cogsEpoch: { increment: 1 } },
+            select: {
+              cogsEpoch: true,
+              lines: { select: { quantity: true, unitCost: true } },
+            },
+          });
+          const targetCents = toCents(inv.lines.reduce((s, l) => s + l.quantity * l.unitCost, 0));
+          await tx.accountingCogsDirty.upsert({
+            where: { invoiceId },
+            create: { invoiceId, generation: inv.cogsEpoch, targetCents, dirtyAt: now },
+            update: { generation: inv.cogsEpoch, targetCents, dirtyAt: now },
+          });
+        }
+      });
+    } catch (error) {
+      const stale = error instanceof StaleFifoPublishError
+        || (error instanceof Error && (error.name === 'StaleFifoPublishError' || error.message === 'FIFO publish stale'));
+      if (stale) return { products: ids.length, movements: 0, lines: 0, stale: true };
+      throw error;
+    }
+
+    return { products: ids.length, movements: movementUpdates.length, lines: lineUpdates.length };
   } catch (error) {
     console.error('FIFO recost failed', error);
     return { products: ids.length, movements: 0, lines: 0, error: true };

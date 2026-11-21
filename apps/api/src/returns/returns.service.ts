@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
-import { CashDirection, StockMovementType } from '@prisma/client';
+import { AccountingEvent, CashDirection, StockMovementType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
 import { assertPeriodsOpen } from '../settings/period-lock';
@@ -7,6 +7,8 @@ import { pageResult, readPage } from '../common/paging';
 import { RETURNS_WAREHOUSE_CODE, RETURNS_WAREHOUSE_NAME } from '../common/returns-warehouse';
 import { recostProducts } from '../common/fifo';
 import { syncSalesReturnOldBatteries } from '../oldbatteries/oldbatteries.service';
+import { PostingService } from '../accounting/posting.service';
+import { QueueService } from '../accounting/queue.service';
 
 function sliceCost(
   lines: { productId: string; quantity: number; unitCost: number }[],
@@ -59,6 +61,8 @@ export class ReturnsService implements OnModuleInit {
   constructor(
     private prisma: PrismaService,
     private sequence: SequenceService,
+    private posting: PostingService,
+    private accountingQueue: QueueService,
   ) {}
 
   async onModuleInit() {
@@ -664,6 +668,16 @@ export class ReturnsService implements OnModuleInit {
       });
     }));
     await syncSalesReturnOldBatteries(this.prisma, this.sequence, created.id);
+    try {
+      await this.posting.postSaleReturn(created.id);
+    } catch (error) {
+      console.error('Accounting sales return post failed', error);
+      try {
+        await this.accountingQueue.enqueue(AccountingEvent.SALE_RETURN, created.id);
+      } catch (queueError) {
+        console.error('Accounting sales return enqueue failed', queueError);
+      }
+    }
     return this.prisma.salesReturn.findUnique({ where: { id: created.id }, include: this.salesInclude() });
   }
 
@@ -975,7 +989,19 @@ export class ReturnsService implements OnModuleInit {
         },
         include: this.purchaseInclude(),
       });
-    }));
+    })).then(async (created) => {
+      try {
+        await this.posting.postPurchaseReturn(created.id);
+      } catch (error) {
+        console.error('Accounting purchase return post failed', error);
+        try {
+          await this.accountingQueue.enqueue(AccountingEvent.PURCHASE_RETURN, created.id);
+        } catch (queueError) {
+          console.error('Accounting purchase return enqueue failed', queueError);
+        }
+      }
+      return created;
+    });
   }
 
   async updatePurchaseReturn(id: string, data: {

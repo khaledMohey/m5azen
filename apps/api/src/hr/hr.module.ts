@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { FinanceModule } from '../finance/finance.module';
+import { AccountingModule } from '../accounting/accounting.module';
 import { AttendanceService } from './attendance.service';
 import { CommissionsService } from './commissions.service';
 import { EmployeesService } from './employees.service';
@@ -13,7 +13,7 @@ import { ensureEgyptTz } from './egypt-time';
 ensureEgyptTz();
 
 @Module({
-  imports: [FinanceModule],
+  imports: [AccountingModule],
   controllers: [HrController],
   providers: [
     HrSettingsService,

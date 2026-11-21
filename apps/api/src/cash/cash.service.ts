@@ -1,15 +1,19 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { CashDirection, InvoiceStatus, PayMethodKind } from '@prisma/client';
+import { AccountingEvent, CashDirection, InvoiceStatus, PayMethodKind } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
 import { assertPeriodsOpen } from '../settings/period-lock';
 import { pageResult, readPage } from '../common/paging';
+import { PostingService } from '../accounting/posting.service';
+import { QueueService } from '../accounting/queue.service';
 
 @Injectable()
 export class CashService {
   constructor(
     private prisma: PrismaService,
     private sequence: SequenceService,
+    private posting: PostingService,
+    private accountingQueue: QueueService,
   ) {}
 
   accounts() {
@@ -326,6 +330,20 @@ export class CashService {
         created.push(receipt);
       }
 
+      return created;
+    }).then(async (created) => {
+      for (const receipt of created) {
+        try {
+          await this.posting.postSaleReceipt(receipt.id);
+        } catch (error) {
+          console.error('Accounting receipt post failed', error);
+          try {
+            await this.accountingQueue.enqueue(AccountingEvent.SALE_RECEIPT, receipt.id);
+          } catch (queueError) {
+            console.error('Accounting receipt enqueue failed', queueError);
+          }
+        }
+      }
       return created[0];
     });
   }
@@ -432,6 +450,18 @@ export class CashService {
             notes: desc,
           },
         });
+      }
+      return payment;
+    }).then(async (payment) => {
+      try {
+        await this.posting.postPurchasePayment(payment.id);
+      } catch (error) {
+        console.error('Accounting payment post failed', error);
+        try {
+          await this.accountingQueue.enqueue(AccountingEvent.PURCHASE_PAYMENT, payment.id);
+        } catch (queueError) {
+          console.error('Accounting payment enqueue failed', queueError);
+        }
       }
       return payment;
     });

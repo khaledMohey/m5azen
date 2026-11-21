@@ -303,6 +303,30 @@ export class HrController {
     return this.payroll.post(id, req.user.userId, body?.methodId);
   }
 
+  @Post('payroll/runs/:id/pay')
+  @Roles(Role.ADMIN, Role.ACCOUNTANT)
+  payRun(@Req() req: ReqUser, @Param('id') id: string, @Body() body?: { methodId?: string }) {
+    return this.payroll.pay(id, req.user.userId, body?.methodId);
+  }
+
+  @Post('payroll/runs/:id/reverse-payment')
+  @Roles(Role.ADMIN, Role.ACCOUNTANT)
+  reversePayment(@Req() req: ReqUser, @Param('id') id: string, @Body() body?: { reason?: string }) {
+    return this.payroll.reversePayment(id, req.user.userId, body?.reason);
+  }
+
+  @Post('payroll/runs/:id/reverse')
+  @Roles(Role.ADMIN, Role.ACCOUNTANT)
+  reverseRun(@Req() req: ReqUser, @Param('id') id: string, @Body() body?: { reason?: string }) {
+    return this.payroll.reverseAccrual(id, req.user.userId, body?.reason);
+  }
+
+  @Get('payroll/payables')
+  @Roles(Role.ADMIN, Role.ACCOUNTANT)
+  employeePayables() {
+    return this.payroll.employeePayables();
+  }
+
   @Delete('payroll/runs/:id')
   @Roles(Role.ADMIN, Role.ACCOUNTANT)
   removeRun(@Param('id') id: string) {

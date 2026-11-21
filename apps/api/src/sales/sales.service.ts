@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { InvoiceStatus, Prisma, StockMovementType } from '@prisma/client';
+import { AccountingEvent, InvoiceStatus, Prisma, StockMovementType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SequenceService } from '../common/sequence.service';
 import { normalizeTenders, postCustomerTenders, reverseSaleMoney, sumTenders, syncSaleTenders, TenderInput } from '../cash/tenders';
@@ -11,6 +11,9 @@ import { dueTone } from '../common/due';
 import { salePriceHints } from '../common/price-hints';
 import { mapSaleLines, previewFifo, recostProducts, replayFifo } from '../common/fifo';
 import { syncSaleOldBatteries } from '../oldbatteries/oldbatteries.service';
+import { PostingService } from '../accounting/posting.service';
+import { CogsReconcileService } from '../accounting/cogs-reconcile.service';
+import { QueueService } from '../accounting/queue.service';
 type ScrapInput = {
   hasScrap?: boolean;
   scrapKg?: number;
@@ -67,6 +70,9 @@ export class SalesService {
   constructor(
     private prisma: PrismaService,
     private sequence: SequenceService,
+    private posting: PostingService,
+    private cogsReconcile: CogsReconcileService,
+    private accountingQueue: QueueService,
   ) {}
 
   priceHints(customerId?: string, excludeInvoiceId?: string) {
@@ -331,9 +337,42 @@ export class SalesService {
         include: { customer: true, warehouse: true, lines: { include: { product: true } } },
       });
     });
-    await recostProducts(this.prisma, inv.lines.map((l) => l.productId));
+    const productIds = inv.lines.map((l) => l.productId);
+    await recostProducts(this.prisma, productIds);
     await syncSaleOldBatteries(this.prisma, this.sequence, id);
+    await this.postSaleAccounting(id, productIds);
     return result;
+  }
+
+  /** ترحيل محاسبي بعد التأكيد — الفشل لا يلغي العملية التشغيلية */
+  private async postSaleAccounting(invoiceId: string, productIds: string[]) {
+    try {
+      await this.posting.postSaleConfirm(invoiceId);
+      const receipts = await this.prisma.receipt.findMany({
+        where: { salesInvoiceId: invoiceId },
+        select: { id: true },
+      });
+      for (const receipt of receipts) {
+        await this.posting.postSaleReceipt(receipt.id);
+      }
+      await this.cogsReconcile.reconcileAfterRecost(productIds);
+    } catch (error) {
+      console.error('Accounting sale post failed', error);
+      try {
+        await this.accountingQueue.enqueue(AccountingEvent.SALE_CONFIRM, invoiceId, {
+          reason: (error as Error).message,
+        });
+        const receipts = await this.prisma.receipt.findMany({
+          where: { salesInvoiceId: invoiceId },
+          select: { id: true },
+        });
+        for (const receipt of receipts) {
+          await this.accountingQueue.enqueue(AccountingEvent.SALE_RECEIPT, receipt.id);
+        }
+      } catch (queueError) {
+        console.error('Accounting sale enqueue failed', queueError);
+      }
+    }
   }
 
   /** قبل الحفظ: كل بند هيتسحب من أنهي دفعات وتكلفته كام */

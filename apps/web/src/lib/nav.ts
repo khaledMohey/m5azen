@@ -2,6 +2,7 @@ import type { LucideIcon } from 'lucide-react';
 import {
   BarChart3,
   Boxes,
+  Calculator,
   FileBarChart,
   Landmark,
   LayoutDashboard,
@@ -79,6 +80,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: 'المالية',
     items: [
       { to: '/finance', label: 'المالية', page: 'finance', icon: Landmark, keywords: 'مصروف شيك وردية' },
+      { to: '/accounting', label: 'الحسابات', page: 'accounting', icon: Calculator, keywords: 'حسابات accounting قيود ميزان' },
       { to: '/hr', label: 'الموارد البشرية', page: 'hr', icon: UserRoundCog, keywords: 'موظفين مرتبات حضور إجازات hr' },
       { to: '/reports', label: 'التقارير', page: 'reports', icon: BarChart3, keywords: 'تقرير report' },
       { to: '/report-builder', label: 'منشئ التقارير', page: 'reportBuilder', icon: FileBarChart, keywords: 'report builder حفظ تصدير' },
