@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <title>دليل استخدام الحسابات والموارد البشرية — مخازن</title>
+  <style>
+    @page { size: A4; margin: 16mm 14mm; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", "Tahoma", "Arial", sans-serif;
+      color: #0f172a;
+      line-height: 1.7;
+      font-size: 12.5px;
+      margin: 0;
+      background: #fff;
+    }
+    h1 { font-size: 26px; margin: 0 0 8px; color: #0f3d2e; }
+    h2 { font-size: 18px; margin: 28px 0 10px; color: #14532d; border-bottom: 2px solid #bbf7d0; padding-bottom: 6px; page-break-after: avoid; }
+    h3 { font-size: 14.5px; margin: 18px 0 8px; color: #166534; page-break-after: avoid; }
+    h4 { font-size: 13px; margin: 12px 0 6px; color: #334155; }
+    p, li { margin: 6px 0; }
+    .cover {
+      min-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 40px 24px;
+      background: linear-gradient(160deg, #ecfdf5 0%, #fff 55%, #f0fdf4 100%);
+      border: 1px solid #bbf7d0;
+      border-radius: 16px;
+      page-break-after: always;
+    }
+    .cover .badge {
+      display: inline-block;
+      background: #166534;
+      color: #fff;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 12px;
+      margin-bottom: 18px;
+    }
+    .muted { color: #64748b; }
+    .toc a { color: #166534; text-decoration: none; }
+    .toc li { margin: 4px 0; }
+    .note, .warn, .ok {
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin: 12px 0;
+      page-break-inside: avoid;
+    }
+    .note { background: #f0f9ff; border: 1px solid #bae6fd; }
+    .warn { background: #fff7ed; border: 1px solid #fed7aa; }
+    .ok { background: #f0fdf4; border: 1px solid #bbf7d0; }
+    table.flow {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10px 0 16px;
+      font-size: 11.5px;
+    }
+    table.flow th, table.flow td {
+      border: 1px solid #e2e8f0;
+      padding: 7px 8px;
+      text-align: right;
+      vertical-align: top;
+    }
+    table.flow th { background: #f8fafc; }
+    .shot {
+      margin: 14px 0 18px;
+      page-break-inside: avoid;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+    }
+    .shot .bar {
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 8px 12px;
+      font-size: 11px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .shot .dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+    .shot .dot.r { background: #f87171; }
+    .shot .dot.y { background: #fbbf24; }
+    .shot .dot.g { background: #34d399; }
+    .shot .caption {
+      background: #f8fafc;
+      border-top: 1px solid #e2e8f0;
+      padding: 8px 12px;
+      font-size: 11.5px;
+      color: #334155;
+    }
+    .ui {
+      background: #f1f5f9;
+      padding: 12px;
+      min-height: 220px;
+    }
+    .ui-header {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 10px;
+    }
+    .ui-header strong { font-size: 16px; color: #0f172a; }
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .tab {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 11px;
+      color: #64748b;
+      font-weight: 700;
+    }
+    .tab.active { background: #15803d; color: #fff; border-color: #15803d; }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px; }
+    .stat {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 10px;
+    }
+    .stat .k { color: #64748b; font-size: 11px; }
+    .stat .v { font-size: 16px; font-weight: 800; margin-top: 4px; }
+    .panel {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .btn {
+      display: inline-block;
+      background: #15803d;
+      color: #fff;
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-weight: 700;
+      font-size: 11.5px;
+    }
+    .btn.sec { background: #e2e8f0; color: #0f172a; }
+    .btn.amber { background: #d97706; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+    .table-mini { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .table-mini th, .table-mini td { border-bottom: 1px solid #e2e8f0; padding: 6px 4px; text-align: right; }
+    .table-mini th { color: #64748b; }
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .badge.green { background: #dcfce7; color: #166534; }
+    .badge.amber { background: #ffedd5; color: #9a3412; }
+    .badge.slate { background: #e2e8f0; color: #334155; }
+    .steps { counter-reset: step; list-style: none; padding: 0; }
+    .steps li {
+      counter-increment: step;
+      margin: 10px 0;
+      padding: 10px 12px 10px 12px;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      position: relative;
+      padding-right: 48px;
+      page-break-inside: avoid;
+    }
+    .steps li::before {
+      content: counter(step);
+      position: absolute;
+      right: 12px;
+      top: 10px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: #166534;
+      color: #fff;
+      font-weight: 800;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 24px;
+      text-align: center;
+    }
+    .footer-note { margin-top: 30px; font-size: 11px; color: #64748b; }
+    code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+  </style>
+</head>
+<body>
+
+<section class="cover">
+  <div class="badge">نظام مخازن · دليل تشغيلي</div>
+  <h1>دليل استخدام الحسابات والموارد البشرية</h1>
+  <p class="muted" style="font-size:15px; max-width:520px;">
+    شرح تفصيلي لجزء الحسابات (القيد المزدوج) وربطه بالمبيعات والمشتريات والخزنة والمرتجعات،
+    مع دورة المرتبات في الموارد البشرية من الاعتماد حتى الصرف والعكس.
+  </p>
+  <p class="muted">الإصدار: نوفمبر 2026 · للاستخدام الداخلي / التجريبي المضبوط</p>
+  <div class="ok" style="margin-top:28px; max-width:560px;">
+    <strong>مهم:</strong> الحسابات طبقة محاسبية فوق العمليات. أرصدة العملاء/الموردين/الخزائن التشغيلية تبقى موجودة،
+    والـ GL يُرحَّل تلقائيًا من الأحداث أو يدويًا من شاشة الحسابات.
+  </div>
+</section>
+
+<h2>الفهرس</h2>
+<ol class="toc">
+  <li><a href="#overview">نظرة عامة والربط مع باقي النظام</a></li>
+  <li><a href="#setup">الإعداد الأولي للحسابات</a></li>
+  <li><a href="#coa">دليل الحسابات</a></li>
+  <li><a href="#journals">القيود اليدوية والترحيل</a></li>
+  <li><a href="#ops">التدفقات التلقائية من العمليات</a></li>
+  <li><a href="#reports">التقارير والقوائم</a></li>
+  <li><a href="#closing">إقفال السنة</a></li>
+  <li><a href="#hr">الموارد البشرية والمرتبات</a></li>
+  <li><a href="#payroll-gl">ربط المرتبات بالحسابات</a></li>
+  <li><a href="#limits">حدود معروفة ونصائح</a></li>
+</ol>
+
+<h2 id="overview">1) نظرة عامة والربط مع باقي النظام</h2>
+<p>
+شاشة <strong>الحسابات</strong> من القائمة الرئيسية. الصلاحية المطلوبة: صفحة <code>accounting</code>
+(عرض / إنشاء / تعديل / ترحيل / عكس / تصدير حسب الدور).
+</p>
+
+<table class="flow">
+  <thead>
+    <tr><th>العملية التشغيلية</th><th>الحدث المحاسبي</th><th>أثر القيد (باختصار)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>تأكيد فاتورة بيع</td><td><code>SALE_CONFIRM</code></td><td>مدين ذمم · دائن مبيعات/ضريبة · COGS/مخزون</td></tr>
+    <tr><td>تحصيل / إيصال بيع</td><td><code>SALE_RECEIPT</code></td><td>مدين نقد · دائن ذمم</td></tr>
+    <tr><td>تأكيد فاتورة شراء</td><td><code>PURCHASE_CONFIRM</code></td><td>مدين مخزون/ضريبة · دائن ذمم دائنة</td></tr>
+    <tr><td>سداد لمورد</td><td><code>PURCHASE_PAYMENT</code></td><td>مدين ذمم دائنة · دائن نقد</td></tr>
+    <tr><td>مصروف تشغيلي</td><td><code>EXPENSE_CREATE</code></td><td>مدين مصروف · دائن نقد</td></tr>
+    <tr><td>مرتجع بيع / شراء</td><td><code>SALE_RETURN</code> / <code>PURCHASE_RETURN</code></td><td>عكس الإيراد/المخزون أو AP حسب النموذج</td></tr>
+    <tr><td>تعديل تكلفة FIFO</td><td><code>SALE_COGS_ADJUST</code></td><td>تعديل COGS والمخزون</td></tr>
+    <tr><td>اعتماد كشف مرتبات</td><td><code>PAYROLL_POST</code></td><td>مدين 5210/5220 · دائن 2300 (بدون نقد)</td></tr>
+    <tr><td>صرف كشف مرتبات</td><td><code>PAYROLL_PAYMENT</code></td><td>مدين 2300 · دائن نقد + حركة خزنة</td></tr>
+  </tbody>
+</table>
+
+<div class="shot">
+  <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span>مخازن / الحسابات</span></div>
+  <div class="ui">
+    <div class="ui-header">
+      <strong>الحسابات</strong>
+      <div class="muted">دليل الحسابات والقيود وميزان المراجعة</div>
+    </div>
+    <div class="tabs">
+      <span class="tab active">لوحة</span>
+      <span class="tab">دليل الحسابات</span>
+      <span class="tab">القيود</span>
+      <span class="tab">ميزان المراجعة</span>
+      <span class="tab">الأرصدة الافتتاحية</span>
+      <span class="tab">دفتر الأستاذ</span>
+      <span class="tab">القوائم المالية</span>
+      <span class="tab">الضريبة</span>
+      <span class="tab">مراكز التكلفة</span>
+      <span class="tab">الأصول والإهلاك</span>
+    </div>
+    <div class="grid">
+      <div class="stat"><div class="k">الأصول</div><div class="v">١٬٢٥٠٬٠٠٠</div></div>
+      <div class="stat"><div class="k">الخصوم</div><div class="v">٤٢٠٬٠٠٠</div></div>
+      <div class="stat"><div class="k">حقوق الملكية</div><div class="v">٨٣٠٬٠٠٠</div></div>
+      <div class="stat"><div class="k">قيود مرحّلة</div><div class="v">186</div></div>
+    </div>
+    <div class="panel muted">من اللوحة تتابع ملخص الأرصدة وعدد المسودات والقيود المرحّلة وحالة COGS المتأخر إن وُجد.</div>
+  </div>
+  <div class="caption">شكل شاشة الحسابات — تبويب اللوحة مع بطاقات الملخص وتبويبات العمل.</div>
+</div>
+
+<h2 id="setup">2) الإعداد الأولي</h2>
+<ol class="steps">
+  <li><strong>صلاحية الدخول:</strong> استخدم حساب ADMIN أو محاسب يملك صلاحية الحسابات.</li>
+  <li><strong>تهيئة الدليل الافتراضي:</strong> من أعلى صفحة الحسابات نفّذ زر التهيئة / seed (إن ظهر) لإنشاء دليل الحسابات والربط الافتراضي للأحداث.</li>
+  <li><strong>ربط الخزائن:</strong> اربط كل <code>CashAccount</code> بحساب في الدليل عبر <code>Account.cashAccountId</code> حتى يُحل حساب النقد ديناميكيًا عند التحصيل/الصرف.</li>
+  <li><strong>الأرصدة الافتتاحية:</strong> من تبويب الأرصدة الافتتاحية أنشئ دفعة للسنة، أدخل الأرصدة، ثم طبّق الدفعة لقيد افتتاحي متوازن.</li>
+</ol>
+
+<div class="warn">
+  <strong>حسابات مهمة في الدليل الافتراضي:</strong>
+  1100 نقد · 1200 ذمم مدينة · 1300 مخزون · 2100 ذمم دائنة · 2200 ضريبة مبيعات ·
+  <strong>2300 رواتب مستحقة</strong> · 4100 مبيعات · 5100 COGS · 5200 مصروفات عامة ·
+  <strong>5210 رواتب · 5220 عمولات</strong> · 3200 أرباح مرحّلة.
+</div>
+
+<h2 id="coa">3) دليل الحسابات</h2>
+<p>من تبويب <strong>دليل الحسابات</strong> تضيف حسابًا بكود واسم ونوع (أصل/خصم/ملكية/إيراد/مصروف) وحساب أب اختياري.</p>
+
+<div class="shot">
+  <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span>الحسابات / دليل الحسابات</span></div>
+  <div class="ui">
+    <div class="tabs">
+      <span class="tab">لوحة</span><span class="tab active">دليل الحسابات</span><span class="tab">القيود</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:10px;">
+      <div class="panel">
+        <strong>حساب جديد</strong>
+        <div class="muted" style="margin:6px 0;">الكود · الاسم · النوع · الأب</div>
+        <div class="btn" style="margin-top:8px;">إضافة الحساب</div>
+      </div>
+      <div class="panel">
+        <table class="table-mini">
+          <tr><th>الكود</th><th>الاسم</th><th>الحالة</th></tr>
+          <tr><td>1100</td><td>النقدية بالصندوق والبنك</td><td><span class="badge green">قابل للترحيل</span></td></tr>
+          <tr><td>2300</td><td>رواتب مستحقة</td><td><span class="badge green">قابل للترحيل</span></td></tr>
+          <tr><td>5210</td><td>مصروف الرواتب</td><td><span class="badge green">قابل للترحيل</span></td></tr>
+          <tr><td>5220</td><td>مصروف العمولات</td><td><span class="badge green">قابل للترحيل</span></td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="caption">إضافة حساب جديد بجانب قائمة الدليل مع شارات «قابل للترحيل».</div>
+</div>
+
+<h2 id="journals">4) القيود اليدوية والترحيل</h2>
+<ol class="steps">
+  <li>من تبويب <strong>القيود</strong> أنشئ مسودة: تاريخ + وصف + سطور مدين/دائن.</li>
+  <li>يجب أن يتساوى مجموع المدين مع مجموع الدائن بالقرش (سنتات).</li>
+  <li>احفظ كمسودة ثم <strong>رحّل</strong> عند الاعتماد.</li>
+  <li>العكس يتم عبر آلية عكس القيد (لا حذف للقيود المرحّلة) ويُنشئ قيدًا عكسيًا مع الإبقاء على السجل.</li>
+</ol>
+
+<div class="shot">
+  <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span>الحسابات / القيود</span></div>
+  <div class="ui">
+    <div class="panel">
+      <strong>قيد يدوي</strong>
+      <div class="muted">مسودة متوازنة قبل الترحيل</div>
+      <table class="table-mini" style="margin-top:8px;">
+        <tr><th>الحساب</th><th>مدين</th><th>دائن</th></tr>
+        <tr><td>5200 المصروفات</td><td>1,500</td><td>0</td></tr>
+        <tr><td>1100 النقدية</td><td>0</td><td>1,500</td></tr>
+      </table>
+      <div class="row">
+        <span class="btn sec">حفظ مسودة</span>
+        <span class="btn">ترحيل</span>
+      </div>
+    </div>
+  </div>
+  <div class="caption">نموذج قيد يدوي متوازن — المسودة لا تدخل التقارير حتى الترحيل.</div>
+</div>
+
+<div class="note">التقارير تشمل القيود <code>POSTED</code> و<code>REVERSED</code> وتستبعد <code>DRAFT</code>.</div>
+
+<h2 id="ops">5) التدفقات التلقائية من العمليات</h2>
+<h3>المبيعات</h3>
+<p>عند تأكيد الفاتورة يُنشأ استحقاق بيع + COGS. عند التحصيل يُرحَّل إيصال لكل دفعة. لو فشل الترحيل الفوري تذهب المهمة لطابور المحاسبة دون إلغاء العملية التشغيلية.</p>
+
+<h3>المشتريات</h3>
+<p>تأكيد الشراء يزيد المخزون والذمم الدائنة. السداد يخصم AP والنقد.</p>
+
+<h3>الخزنة والمصروفات</h3>
+<p>سندات القبض/الصرف والمصروفات التشغيلية تُرحَّل عبر أحداث الاستلام/الدفع/المصروف. <strong>مرتب HR لا يمر كمصروف مالية مكرر</strong> بعد الربط الجديد.</p>
+
+<h3>المرتجعات</h3>
+<p>مرتجع الشراء يقلل AP والمخزون. مرتجع البيع التشغيلي قد يمثل خردة/استهلاك وليس دائمًا إشعار دائن تقليدي للعميل — راقب القيد والنموذج.</p>
+
+<div class="shot">
+  <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span>مثال: تسلسل بيع → تحصيل</span></div>
+  <div class="ui">
+    <div class="panel">
+      <ol style="margin:0; padding-right:18px;">
+        <li>تأكيد فاتورة بيع 10,000 + ضريبة → قيد <code>SALE_CONFIRM</code></li>
+        <li>تحصيل نقدي 10,000 → قيد <code>SALE_RECEIPT</code> + زيادة خزنة</li>
+        <li>لو تغيّر FIFO لاحقًا → <code>SALE_COGS_ADJUST</code> من الطابور</li>
+      </ol>
+    </div>
+  </div>
+  <div class="caption">الربط الآلي: العملية تُنفَّذ أولًا، ثم الترحيل المحاسبي (فوري أو عبر الطابور).</div>
+</div>
+
+<h2 id="reports">6) التقارير والقوائم</h2>
+<table class="flow">
+  <tr><th>التبويب</th><th>ماذا يعرض</th><th>ملاحظات</th></tr>
+  <tr><td>ميزان المراجعة</td><td>مدين/دائن لكل حساب</td><td>يجب أن يتساوى الإجماليان</td></tr>
+  <tr><td>دفتر الأستاذ</td><td>حركة حساب واحد في فترة</td><td>اختر الحساب والتواريخ</td></tr>
+  <tr><td>القوائم المالية</td><td>ميزانية · دخل · تدفقات</td><td>التدفقات مبسّطة من قيود GL</td></tr>
+  <tr><td>الضريبة</td><td>ملخص ضريبة المبيعات/المشتريات</td><td>افتراض ضريبة مشتريات قابلة للاسترداد</td></tr>
+  <tr><td>مراكز التكلفة</td><td>تجميع حسب المركز</td><td>إن رُبطت السطور بمراكز</td></tr>
+  <tr><td>الأصول والإهلاك</td><td>تشغيل إهلاك الأصول الثابتة</td><td>حدث <code>DEPRECIATION</code></td></tr>
+</table>
+
+<div class="ok">تقرير المطابقة: <code>GET /api/accounting/reports/reconciliation</code> — قراءة فقط، لا يعدّل أرصدة. يُظهر فروق ops↔GL المتوقعة قبل اكتمال الترحيل التاريخي.</div>
+
+<h2 id="closing">7) إقفال السنة</h2>
+<ol class="steps">
+  <li>تأكد من اكتمال القيود وموازنة الميزان.</li>
+  <li>نفّذ إقفال السنة: يصفر الإيرادات/المصروفات وينقل الصافي إلى الأرباح المرحّلة (3200) عبر مصدر <code>YEARCLOSE-{year}</code>.</li>
+  <li>إعادة الإقفال لنفس السنة مرفوضة طالما القيد فعّال.</li>
+  <li>عكس قيد الإقفال يفتح السنة مجددًا (يمسح قفل الإعداد).</li>
+</ol>
+
+<h2 id="hr">8) الموارد البشرية</h2>
+<p>شاشة <strong>الموارد البشرية</strong>: طلبات، موظفين، حضور، إجازات، حركات، مرتبات، مدفوعات، عمولات، إعدادات.</p>
+
+<div class="shot">
+  <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span>مخازن / الموارد البشرية</span></div>
+  <div class="ui">
+    <div class="ui-header">
+      <strong>الموارد البشرية</strong>
+      <div class="muted">طلبات، حضور، مرتبات، وعمولات</div>
+    </div>
+    <div class="tabs">
+      <span class="tab">طلبات</span>
+      <span class="tab">الموظفين</span>
+      <span class="tab">الحضور</span>
+      <span class="tab">الإجازات</span>
+      <span class="tab">الحركات</span>
+      <span class="tab active">المرتبات</span>
+      <span class="tab">مدفوعات الرواتب</span>
+      <span class="tab">العمولات</span>
+      <span class="tab">إعدادات HR</span>
+    </div>
+    <div class="panel">
+      <div class="row">
+        <span class="btn sec">احسب المعاينة</span>
+        <span class="btn">حفظ مسودة</span>
+      </div>
+      <table class="table-mini" style="margin-top:10px;">
+        <tr><th>الموظف</th><th>صافي الراتب</th><th>عمولة</th><th>الصافي</th></tr>
+        <tr><td>أحمد · E-01</td><td>8,200</td><td>1,100</td><td>9,300</td></tr>
+        <tr><td>سارة · E-02</td><td>6,400</td><td>0</td><td>6,400</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="caption">تبويب المرتبات: حساب المعاينة ثم حفظ مسودة الكشف قبل الاعتماد.</div>
+</div>
+
+<h3>دورة المرتبات خطوة بخطوة</h3>
+<ol class="steps">
+  <li><strong>احسب المعاينة:</strong> حدد الفترة (واختياريًا موظفين). النظام يحسب الحضور والإجازات والحركات والعمولات.</li>
+  <li><strong>حفظ مسودة:</strong> تُنشأ <code>PayrollRun</code> بحالة <code>DRAFT</code> مع سطر لكل موظف.</li>
+  <li><strong>اعتماد:</strong> زر «اعتماد» ينقل الكشف إلى <code>POSTED</code> وينشئ قيد استحقاق محاسبي فقط (بدون صرف نقدي).</li>
+  <li><strong>صرف:</strong> من تبويب <strong>مدفوعات الرواتب</strong> اختر طريقة دفع فورية واضغط «صرف» للكشوف المستحقة.</li>
+  <li><strong>عكس (إن لزم):</strong> الكشف المدفوع لا يُعكس استحقاقه مباشرة — اعكس الصرف أولًا ثم الاستحقاق.</li>
+</ol>
+
+<div class="shot">
+  <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span>HR / مدفوعات الرواتب</span></div>
+  <div class="ui">
+    <div class="panel">
+      <strong>مدفوعات الرواتب</strong>
+      <div class="muted">كشوف معتمدة بانتظار الصرف أو مصروفة</div>
+      <table class="table-mini" style="margin-top:8px;">
+        <tr><th>الفترة</th><th>الحالة</th><th>الصافي</th><th>إجراء</th></tr>
+        <tr>
+          <td>01/02 → 28/02</td>
+          <td><span class="badge amber">مستحق</span></td>
+          <td>15,700</td>
+          <td><span class="btn amber">صرف</span></td>
+        </tr>
+        <tr>
+          <td>01/01 → 31/01</td>
+          <td><span class="badge green">مصروف</span></td>
+          <td>14,200</td>
+          <td><span class="btn sec">عرض</span></td>
+        </tr>
+      </table>
+    </div>
+  </div>
+  <div class="caption">بعد الاعتماد تظهر الكشوف كـ«مستحق»؛ الصرف يخصم الخزنة ويقفل المستحقات.</div>
+</div>
+
+<h2 id="payroll-gl">9) ربط المرتبات بالحسابات (تفصيلي)</h2>
+
+<h3>أ) عند الاعتماد (بدون نقد)</h3>
+<table class="flow">
+  <tr><th>الجانب</th><th>الحساب</th><th>المبلغ</th></tr>
+  <tr><td>مدين</td><td>5210 مصروف الرواتب</td><td>مجموع salaryNet</td></tr>
+  <tr><td>مدين</td><td>5220 مصروف العمولات</td><td>مجموع commissionDue (إن وُجد)</td></tr>
+  <tr><td>دائن</td><td>2300 رواتب مستحقة</td><td>الإجمالي</td></tr>
+</table>
+
+<h3>ب) عند الصرف</h3>
+<table class="flow">
+  <tr><th>الجانب</th><th>الحساب / الحركة</th><th>المبلغ</th></tr>
+  <tr><td>مدين</td><td>2300 رواتب مستحقة</td><td>صافي الكشف</td></tr>
+  <tr><td>دائن</td><td>حساب النقد/البنك المربوط بطريقة الدفع</td><td>نفس المبلغ</td></tr>
+  <tr><td>تشغيلي</td><td>حركة خزنة OUT مرجع <code>PAYROLL-&#123;runId&#125;</code></td><td>نفس المبلغ</td></tr>
+</table>
+
+<div class="ok">
+  <strong>الأمان:</strong> الصرف يستخدم تحديثًا شرطيًا داخل معاملة واحدة (claim) + outbox محاسبي،
+  حتى لا ينجح طلبان متزامنان في خصم الخزنة مرتين، ولا يُفقد طلب الترحيل عند فشل القيد الفوري.
+</div>
+
+<h3>ج) العكس بالترتيب الصحيح</h3>
+<ol class="steps">
+  <li>كشف <strong>غير مدفوع</strong>: عكس الاستحقاق من API/شاشة العكس → يرجع مسودة مع الإبقاء على سجل القيود.</li>
+  <li>كشف <strong>مدفوع</strong>: أولًا <code>reverse-payment</code> (عكس قيد الصرف + حركة خزنة IN مطابقة)، ثم عكس الاستحقاق.</li>
+  <li>لا يُحذف قيد مرحّل؛ العكس قيد جديد مرتبط بالأصل.</li>
+</ol>
+
+<div class="warn">
+  الدفع الجزئي غير مدعوم حاليًا — اصرف كامل مستحق الكشف.
+  الحساب <code>2200</code> محجوز لضريبة المبيعات؛ مستحقات الرواتب على <code>2300</code>.
+</div>
+
+<h2 id="limits">10) حدود معروفة ونصائح تشغيل</h2>
+<ul>
+  <li>فروق أرصدة العملاء/الموردين/الخزائن التشغيلية مقابل GL متوقعة حتى اكتمال الترحيل التاريخي وربط الخزائن.</li>
+  <li>قائمة التدفقات النقدية مبسّطة من قيود الأستاذ.</li>
+  <li>تزامن عدة عمال على Turso يحتاج مراقبة في الإنتاج؛ محليًا تم اختبار claim على SQLite.</li>
+  <li>لا تستخدم قاعدة الاختبار <code>accounting-test.db</code> على بيانات حية؛ ولا تلمس Turso أثناء التجارب المحلية.</li>
+  <li>بعد التحديث: نفّذ تهيئة الدليل إن كانت البيئة جديدة، واربط الخزائن، ثم اختبر فاتورة بيع صغيرة وكشف مرتبات على بيئة تجريبية.</li>
+</ul>
+
+<div class="footer-note">
+  مستند تشغيلي لنظام مخازن — الحسابات + HR.<br />
+  للمراجع التقنية المختصرة راجع أيضًا <code>apps/api/docs/ACCOUNTING.md</code>.
+</div>
+
+</body>
+</html>
