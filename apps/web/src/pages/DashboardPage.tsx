@@ -55,6 +55,27 @@ function growth(current = 0, previous = 0) {
 
 const BRANCH_COLORS = ['#1e3a5f', '#0ea5e9', '#f59e0b', '#10b981', '#8b5cf6', '#f43f5e'];
 
+const EMPTY_INSIGHT: Insight = {
+  labels: [],
+  salesSeries: [],
+  purchaseSeries: [],
+  countSeries: [],
+  monthRevenue: 0,
+  monthProfit: 0,
+  monthCount: 0,
+  revenue30: 0,
+  purchases30: 0,
+  topProducts: [],
+  topCustomers: [],
+  branches: [],
+  slices: [],
+  aging: {
+    red: { count: 0, amount: 0 },
+    yellow: { count: 0, amount: 0 },
+    green: { count: 0, amount: 0 },
+  },
+};
+
 function greeting() {
   const hour = new Date().getHours();
   if (hour < 12) return 'صباح الخير';
@@ -70,13 +91,34 @@ export function DashboardPage() {
   const [to, setTo] = useState(todayIso);
   const [overview, setOverview] = useState<{ sales: { total: number; count: number }; purchases: { total: number; count: number } } | null>(null);
   const [insight, setInsight] = useState<Insight | null>(null);
+  const [insightLoaded, setInsightLoaded] = useState(false);
   const role = user?.role || '';
   const finance = role === 'ADMIN' || role === 'ACCOUNTANT';
   const warehouse = role === 'ADMIN' || role === 'WAREHOUSE';
 
   useEffect(() => {
-    api<Dash>('/dashboard').then(setData).catch((err) => setError(err instanceof Error ? err.message : 'تعذر تحميل اللوحة'));
-    api<Insight>('/dashboard/insight').then(setInsight).catch(() => setInsight(null));
+    let cancelled = false;
+    setError('');
+    api<Dash>('/dashboard')
+      .then((row) => { if (!cancelled) setData(row); })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'تعذر تحميل اللوحة');
+      });
+    api<Insight>('/dashboard/insight')
+      .then((row) => {
+        if (!cancelled) {
+          setInsight(row);
+          setInsightLoaded(true);
+        }
+      })
+      .catch(() => {
+        // لا نعلّق اللوحة كلها لو فشل insight — نعرض الملخص الأساسي
+        if (!cancelled) {
+          setInsight(EMPTY_INSIGHT);
+          setInsightLoaded(true);
+        }
+      });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -98,7 +140,8 @@ export function DashboardPage() {
   }, [data]);
 
   if (error) return <Card><Empty text="تعذر تحميل لوحة التحكم" hint={error} /></Card>;
-  if (!data || !insight) return <PageSkeleton />;
+  // كانت اللوحة تعلق على Skeleton للأبد لو فشل /dashboard/insight لأن الشرط كان !insight
+  if (!data || !insightLoaded || !insight) return <PageSkeleton />;
 
   const salesGrowth = growth(data.salesMonth?.total, data.salesPrevMonth?.total);
   const purchaseGrowth = growth(data.purchasesMonth?.total, data.purchasesPrevMonth?.total);

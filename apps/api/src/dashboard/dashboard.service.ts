@@ -166,104 +166,143 @@ export class DashboardService {
   }
 
   async insight() {
-    const since30 = new Date();
-    since30.setHours(0, 0, 0, 0);
-    since30.setDate(since30.getDate() - 29);
-    const monthStart = new Date(since30);
-    monthStart.setDate(1);
-    const from = monthStart < since30 ? monthStart : since30;
-    const [sales, purchases, categories] = await Promise.all([
-      this.prisma.salesInvoice.findMany({
-        where: {
-          OR: [
-            { invoiceDate: { gte: from }, status: { notIn: ['DRAFT', 'CANCELLED'] } },
-            { status: { in: ['CONFIRMED', 'PARTIAL'] } },
-          ],
-        },
-        include: {
-          customer: { select: { name: true } },
-          warehouse: { select: { name: true } },
-          lines: { include: { product: { select: { name: true, categoryId: true } } } },
-        },
-      }),
-      this.prisma.purchaseInvoice.findMany({
-        where: { invoiceDate: { gte: since30 }, status: { notIn: ['DRAFT', 'CANCELLED'] } },
-        select: { invoiceDate: true, total: true },
-      }),
-      this.prisma.category.findMany(),
-    ]);
-    const days30 = Array.from({ length: 30 }, (_, index) => {
-      const day = new Date();
-      day.setDate(day.getDate() - (29 - index));
-      return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(day);
-    });
-    const dayKey = (value: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(value);
-    const salesByDay = new Map<string, number>();
-    const countByDay = new Map<string, number>();
-    const purchasesByDay = new Map<string, number>();
-    const productRevenue = new Map<string, { value: number; qty: number }>();
-    const customerRevenue = new Map<string, { value: number; count: number }>();
-    const categoryRevenue = new Map<string, number>();
-    const branchRevenue = new Map<string, number>();
-    const aging = { red: { count: 0, amount: 0 }, yellow: { count: 0, amount: 0 }, green: { count: 0, amount: 0 } };
-    let monthRevenue = 0;
-    let monthCost = 0;
-    let monthCount = 0;
-    for (const sale of sales) {
-      const key = dayKey(sale.invoiceDate);
-      const inMonth = sale.invoiceDate >= monthStart;
-      if (inMonth) {
-        monthRevenue += sale.total;
-        monthCount += 1;
-        monthCost += sale.lines.reduce((sum, line) => sum + line.quantity * (line.unitCost || 0), 0);
-      }
-      const remaining = sale.total - sale.paidAmount;
-      const tone = dueTone(sale.invoiceDate, remaining);
-      if (tone !== 'clear') {
-        aging[tone].count += 1;
-        aging[tone].amount += remaining;
-      }
-      if (sale.invoiceDate < since30) continue;
-      salesByDay.set(key, (salesByDay.get(key) || 0) + sale.total);
-      countByDay.set(key, (countByDay.get(key) || 0) + 1);
-      const customer = customerRevenue.get(sale.customer.name) || { value: 0, count: 0 };
-      customerRevenue.set(sale.customer.name, { value: customer.value + sale.total, count: customer.count + 1 });
-      branchRevenue.set(sale.warehouse.name, (branchRevenue.get(sale.warehouse.name) || 0) + sale.total);
-      for (const line of sale.lines) {
-        const name = line.product.name;
-        const product = productRevenue.get(name) || { value: 0, qty: 0 };
-        productRevenue.set(name, { value: product.value + line.total, qty: product.qty + line.quantity });
-        const category = categories.find((item) => item.id === line.product.categoryId)?.name || 'بدون تصنيف';
-        categoryRevenue.set(category, (categoryRevenue.get(category) || 0) + line.total);
-      }
-    }
-    for (const purchase of purchases) {
-      const key = dayKey(purchase.invoiceDate);
-      purchasesByDay.set(key, (purchasesByDay.get(key) || 0) + purchase.total);
-    }
-    const sorted = <T,>(map: Map<string, T>, value: (item: T) => number) => [...map.entries()].sort((a, b) => value(b[1]) - value(a[1]));
-    const cats = sorted(categoryRevenue, (value) => value);
-    const topCats = cats.slice(0, 6);
-    const otherCats = cats.slice(6).reduce((sum, [, value]) => sum + value, 0);
-    const palette = ['#1e3a5f', '#0ea5e9', '#f59e0b', '#10b981', '#8b5cf6', '#f43f5e', '#64748b', '#14b8a6'];
-    return {
-      labels: days30.map((day) => `${Number(day.slice(8))}/${Number(day.slice(5, 7))}`),
-      salesSeries: days30.map((day) => salesByDay.get(day) || 0),
-      purchaseSeries: days30.map((day) => purchasesByDay.get(day) || 0),
-      countSeries: days30.map((day) => countByDay.get(day) || 0),
-      monthRevenue,
-      monthProfit: monthRevenue - monthCost,
-      monthCount,
-      revenue30: days30.reduce((sum, day) => sum + (salesByDay.get(day) || 0), 0),
-      purchases30: days30.reduce((sum, day) => sum + (purchasesByDay.get(day) || 0), 0),
-      topProducts: sorted(productRevenue, (item) => item.value).slice(0, 5).map(([label, item]) => ({ label, value: item.value, hint: `${item.qty.toLocaleString('ar-EG')} قطعة مباعة` })),
-      topCustomers: sorted(customerRevenue, (item) => item.value).slice(0, 5).map(([label, item]) => ({ label, value: item.value, hint: `${item.count.toLocaleString('ar-EG')} فاتورة` })),
-      branches: sorted(branchRevenue, (value) => value).map(([label, value]) => ({ label, value })),
-      slices: [
-        ...topCats.map(([label, value], index) => ({ label, value, color: palette[index % palette.length] })),
-        ...(otherCats > 0 ? [{ label: 'أخرى', value: otherCats, color: '#cbd5e1' }] : []),
-      ],
-      aging,
+    const empty = {
+      labels: [] as string[],
+      salesSeries: [] as number[],
+      purchaseSeries: [] as number[],
+      countSeries: [] as number[],
+      monthRevenue: 0,
+      monthProfit: 0,
+      monthCount: 0,
+      revenue30: 0,
+      purchases30: 0,
+      topProducts: [] as { label: string; value: number; hint: string }[],
+      topCustomers: [] as { label: string; value: number; hint: string }[],
+      branches: [] as { label: string; value: number }[],
+      slices: [] as { label: string; value: number; color: string }[],
+      aging: {
+        red: { count: 0, amount: 0 },
+        yellow: { count: 0, amount: 0 },
+        green: { count: 0, amount: 0 },
+      },
     };
+    try {
+      const since30 = new Date();
+      since30.setHours(0, 0, 0, 0);
+      since30.setDate(since30.getDate() - 29);
+      const monthStart = new Date();
+      monthStart.setHours(0, 0, 0, 0);
+      monthStart.setDate(1);
+      const chartFrom = monthStart < since30 ? monthStart : since30;
+
+      // فصل استعلام الرسوم عن تقادم الذمم حتى لا نجلب كل الفواتير المفتوحة مع السطور
+      const [sales, openSales, purchases, categories] = await Promise.all([
+        this.prisma.salesInvoice.findMany({
+          where: {
+            invoiceDate: { gte: chartFrom },
+            status: { notIn: ['DRAFT', 'CANCELLED'] },
+          },
+          include: {
+            customer: { select: { name: true } },
+            warehouse: { select: { name: true } },
+            lines: { include: { product: { select: { name: true, categoryId: true } } } },
+          },
+          take: 5000,
+        }),
+        this.prisma.salesInvoice.findMany({
+          where: { status: { in: ['CONFIRMED', 'PARTIAL'] } },
+          select: { invoiceDate: true, total: true, paidAmount: true },
+          take: 5000,
+        }),
+        this.prisma.purchaseInvoice.findMany({
+          where: { invoiceDate: { gte: since30 }, status: { notIn: ['DRAFT', 'CANCELLED'] } },
+          select: { invoiceDate: true, total: true },
+          take: 5000,
+        }),
+        this.prisma.category.findMany(),
+      ]);
+
+      const days30 = Array.from({ length: 30 }, (_, index) => {
+        const day = new Date();
+        day.setDate(day.getDate() - (29 - index));
+        return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(day);
+      });
+      const dayKey = (value: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(value);
+      const salesByDay = new Map<string, number>();
+      const countByDay = new Map<string, number>();
+      const purchasesByDay = new Map<string, number>();
+      const productRevenue = new Map<string, { value: number; qty: number }>();
+      const customerRevenue = new Map<string, { value: number; count: number }>();
+      const categoryRevenue = new Map<string, number>();
+      const branchRevenue = new Map<string, number>();
+      const aging = { red: { count: 0, amount: 0 }, yellow: { count: 0, amount: 0 }, green: { count: 0, amount: 0 } };
+      let monthRevenue = 0;
+      let monthCost = 0;
+      let monthCount = 0;
+      const categoryName = new Map(categories.map((item) => [item.id, item.name]));
+
+      for (const sale of openSales) {
+        const remaining = sale.total - sale.paidAmount;
+        const tone = dueTone(sale.invoiceDate, remaining);
+        if (tone !== 'clear') {
+          aging[tone].count += 1;
+          aging[tone].amount += remaining;
+        }
+      }
+
+      for (const sale of sales) {
+        const key = dayKey(sale.invoiceDate);
+        const inMonth = sale.invoiceDate >= monthStart;
+        if (inMonth) {
+          monthRevenue += sale.total;
+          monthCount += 1;
+          monthCost += sale.lines.reduce((sum, line) => sum + line.quantity * (line.unitCost || 0), 0);
+        }
+        if (sale.invoiceDate < since30) continue;
+        salesByDay.set(key, (salesByDay.get(key) || 0) + sale.total);
+        countByDay.set(key, (countByDay.get(key) || 0) + 1);
+        const customer = customerRevenue.get(sale.customer.name) || { value: 0, count: 0 };
+        customerRevenue.set(sale.customer.name, { value: customer.value + sale.total, count: customer.count + 1 });
+        branchRevenue.set(sale.warehouse.name, (branchRevenue.get(sale.warehouse.name) || 0) + sale.total);
+        for (const line of sale.lines) {
+          const name = line.product.name;
+          const product = productRevenue.get(name) || { value: 0, qty: 0 };
+          productRevenue.set(name, { value: product.value + line.total, qty: product.qty + line.quantity });
+          const category = (line.product.categoryId && categoryName.get(line.product.categoryId)) || 'بدون تصنيف';
+          categoryRevenue.set(category, (categoryRevenue.get(category) || 0) + line.total);
+        }
+      }
+      for (const purchase of purchases) {
+        const key = dayKey(purchase.invoiceDate);
+        purchasesByDay.set(key, (purchasesByDay.get(key) || 0) + purchase.total);
+      }
+      const sorted = <T,>(map: Map<string, T>, value: (item: T) => number) => [...map.entries()].sort((a, b) => value(b[1]) - value(a[1]));
+      const cats = sorted(categoryRevenue, (value) => value);
+      const topCats = cats.slice(0, 6);
+      const otherCats = cats.slice(6).reduce((sum, [, value]) => sum + value, 0);
+      const palette = ['#1e3a5f', '#0ea5e9', '#f59e0b', '#10b981', '#8b5cf6', '#f43f5e', '#64748b', '#14b8a6'];
+      return {
+        labels: days30.map((day) => `${Number(day.slice(8))}/${Number(day.slice(5, 7))}`),
+        salesSeries: days30.map((day) => salesByDay.get(day) || 0),
+        purchaseSeries: days30.map((day) => purchasesByDay.get(day) || 0),
+        countSeries: days30.map((day) => countByDay.get(day) || 0),
+        monthRevenue,
+        monthProfit: monthRevenue - monthCost,
+        monthCount,
+        revenue30: days30.reduce((sum, day) => sum + (salesByDay.get(day) || 0), 0),
+        purchases30: days30.reduce((sum, day) => sum + (purchasesByDay.get(day) || 0), 0),
+        topProducts: sorted(productRevenue, (item) => item.value).slice(0, 5).map(([label, item]) => ({ label, value: item.value, hint: `${item.qty.toLocaleString('ar-EG')} قطعة مباعة` })),
+        topCustomers: sorted(customerRevenue, (item) => item.value).slice(0, 5).map(([label, item]) => ({ label, value: item.value, hint: `${item.count.toLocaleString('ar-EG')} فاتورة` })),
+        branches: sorted(branchRevenue, (value) => value).map(([label, value]) => ({ label, value })),
+        slices: [
+          ...topCats.map(([label, value], index) => ({ label, value, color: palette[index % palette.length] })),
+          ...(otherCats > 0 ? [{ label: 'أخرى', value: otherCats, color: '#cbd5e1' }] : []),
+        ],
+        aging,
+      };
+    } catch (error) {
+      console.error('dashboard insight failed', error);
+      return empty;
+    }
   }
 }
